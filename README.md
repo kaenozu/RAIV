@@ -77,6 +77,24 @@ pytest
 python .\raiv.py
 ```
 
+Windows の既定アプリとして使いたい場合:
+
+```powershell
+register_raiv_file_association.bat
+```
+
+このバッチは、対応拡張子を RAIV に関連付けし、既定のアプリ設定画面を開きます。
+Windows では拡張子ごとの既定アプリ確定に 1 回の確認が必要な場合があります。
+
+通常の Windows 実行形式（.exe）にしたい場合:
+
+```powershell
+build_raiv_exe.bat
+```
+
+ビルド後は `dist\RAIV\RAIV.exe` が生成されます。
+このフォルダ内の `register_raiv_file_association.bat` を実行すると、`.exe` を既定アプリ候補として登録できます。
+
 起動時オプション:
 
 ```powershell
@@ -313,6 +331,15 @@ Usually, run `run_raiv.vbs`. If you want to show the command window, run `run_ra
 ```powershell
 python .\raiv.py
 ```
+
+If you want a normal Windows executable (.exe):
+
+```powershell
+build_raiv_exe.bat
+```
+
+After build, `dist\RAIV\RAIV.exe` is created.
+Run `dist\RAIV\register_raiv_file_association.bat` to register the built exe as an app choice for supported file extensions.
 
 Startup options:
 

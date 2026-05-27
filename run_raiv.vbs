@@ -5,11 +5,17 @@
 
 Option Explicit
 
-Dim shell, fso, scriptDir, batchPath
+Dim shell, fso, scriptDir, batchPath, argsText, i, arg
 Set shell = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
 
 scriptDir = fso.GetParentFolderName(WScript.ScriptFullName)
 batchPath = fso.BuildPath(scriptDir, "run_raiv.bat")
 shell.CurrentDirectory = scriptDir
-shell.Run """" & batchPath & """", 0, False
+argsText = ""
+For i = 0 To WScript.Arguments.Count - 1
+	arg = WScript.Arguments(i)
+	arg = Replace(arg, """", """""")
+	argsText = argsText & " """ & arg & """"
+Next
+shell.Run """" & batchPath & """" & argsText, 0, False

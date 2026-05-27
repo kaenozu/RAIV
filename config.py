@@ -19,6 +19,7 @@ import ctypes
 import json
 import os
 import shutil
+import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -34,7 +35,7 @@ except ImportError:
 APP_NAME = "Realtime AI Image Viewer"
 APP_SHORT_NAME = "RAIV"
 APP_ID = "RealtimeAIImageViewer.RAIV"
-APP_DIR = Path(__file__).resolve().parent
+APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 CONFIG_PATH = APP_DIR / "setting.json"
 APP_ICON_ICO = APP_DIR / "assets" / "app_icon.ico"
 APP_ICON_PNG = APP_DIR / "assets" / "app_icon.png"
