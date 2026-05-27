@@ -21,7 +21,7 @@ UI_TEXT_EN = {
     "固定": "Pin",
     "固定中": "Pinned",
     "自動表示": "Auto",
-    "エンジン設定": "Engine",
+    "エンジン設定": "Engine settings",
     "全般": "General",
     "キーコンフィグ": "Key Config",
     "エンジン": "Engine",

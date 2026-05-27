@@ -2673,7 +2673,7 @@ class MainWindow(QMainWindow):
         if hasattr(self, "pin_button"):
             self.pin_button.setText(self.tr_ui("固定中" if self.pin_button.isChecked() else "自動表示"))
         if hasattr(self, "language_label"):
-            self.language_label.setText("Language")
+            self.language_label.setText(self.tr_ui("表示言語"))
         self.update_zoom_label(self.viewer.current_scale() if hasattr(self, "viewer") else 1.0)
         self.update_page_position_slider()
         self.refresh_keyconfig_buttons()

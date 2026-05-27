@@ -6,7 +6,7 @@ from PySide6.QtGui import QColor, QImage
 
 from archive_utils import archive_member_output_path, collect_archive_outputs
 from renderer_utils import compose_side_by_side_images, iter_difference_points
-from ui_text import translate_binding_text, translate_state_text, translate_ui_text
+from ui_text import UI_TEXT_EN, translate_binding_text, translate_state_text, translate_ui_text
 
 
 def test_archive_member_output_path_rejects_traversal(tmp_path: Path) -> None:
@@ -53,5 +53,14 @@ def test_iter_difference_points_reports_changed_pixels() -> None:
 
 def test_ui_text_helpers_translate_for_english() -> None:
     assert translate_ui_text("画像を開く", "en") == "Open image"
+    assert translate_ui_text("エンジン設定", "en") == "Engine settings"
+    assert translate_ui_text("Engine settings", "ja") == "エンジン設定"
+    assert translate_ui_text("表示言語", "en") == "Language"
+    assert translate_ui_text("Language", "ja") == "表示言語"
     assert translate_binding_text("左クリック", "en") == "Left click"
     assert translate_state_text("処理済み", "en") == "Processed"
+
+
+def test_ui_text_english_values_are_unique() -> None:
+    values = list(UI_TEXT_EN.values())
+    assert len(values) == len(set(values))

@@ -49,6 +49,7 @@ if not exist "dist\RAIV" (
 )
 
 copy /Y "register_raiv_file_association.bat" "dist\RAIV\register_raiv_file_association.bat" >nul
+copy /Y "register_raiv_file_association.ps1" "dist\RAIV\register_raiv_file_association.ps1" >nul
 if exist "dist\RAIV\RAIV.exe" (
     echo.
     echo Build succeeded.
