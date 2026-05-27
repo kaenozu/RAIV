@@ -18,6 +18,12 @@ def test_sort_images_by_name_casefold_orders_case_insensitive() -> None:
     assert [path.name for path in sorted_paths] == ["A.jpg", "b.PNG", "c.webp"]
 
 
+def test_sort_images_name_mode_orders_numeric_suffixes() -> None:
+    paths = [Path("img10.png"), Path("img2.png"), Path("img1.png")]
+    sorted_paths = sort_images(paths, mode="name")
+    assert [path.name for path in sorted_paths] == ["img1.png", "img2.png", "img10.png"]
+
+
 def test_sort_images_natural_mode_orders_numeric_suffixes() -> None:
     paths = [Path("img10.png"), Path("img2.png"), Path("img1.png")]
     sorted_paths = sort_images(paths, mode="natural")

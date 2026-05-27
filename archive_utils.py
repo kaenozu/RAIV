@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Callable
 
 from exceptions import ArchiveExtractionError, ArchiveToolNotFoundError, UnsupportedArchiveFormatError
-from helpers import archive_display_name, safe_archive_member_parts
+from helpers import archive_display_name, natural_sort_key, safe_archive_member_parts
 
 ArchiveResult = tuple[list[Path], dict[Path, str]]
 SEVEN_ZIP_COMMAND_NAMES = ("7z", "7za", "7zr")
@@ -22,7 +22,7 @@ def archive_member_output_path(temp_dir: Path, member_name: str) -> Path | None:
 def collect_archive_outputs(temp_dir: Path, is_image: Callable[[Path], bool]) -> ArchiveResult:
     images = sorted(
         [path.resolve() for path in temp_dir.rglob("*") if path.is_file() and is_image(path)],
-        key=lambda path: str(path.relative_to(temp_dir)).lower(),
+        key=lambda path: natural_sort_key(archive_display_name(str(path.relative_to(temp_dir)))),
     )
     names = {path: archive_display_name(str(path.relative_to(temp_dir))) for path in images}
     return images, names
@@ -48,7 +48,7 @@ def extract_zip_images(archive_path: Path, temp_dir: Path, is_image: Callable[[P
     with zipfile.ZipFile(archive_path) as archive:
         members = sorted(
             [info for info in archive.infolist() if not info.is_dir() and is_image(Path(info.filename))],
-            key=lambda item: item.filename.lower(),
+            key=lambda item: natural_sort_key(archive_display_name(item.filename)),
         )
         for info in members:
             output = archive_member_output_path(temp_dir, info.filename)
@@ -69,7 +69,7 @@ def extract_rar_images(archive_path: Path, temp_dir: Path, is_image: Callable[[P
     with rarfile_module.RarFile(archive_path) as archive:
         members = sorted(
             [info for info in archive.infolist() if not info.isdir() and is_image(Path(info.filename))],
-            key=lambda item: item.filename.lower(),
+            key=lambda item: natural_sort_key(archive_display_name(item.filename)),
         )
         for info in members:
             output = archive_member_output_path(temp_dir, info.filename)
