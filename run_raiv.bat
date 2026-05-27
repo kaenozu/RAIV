@@ -1,4 +1,8 @@
 @echo off
+REM run_raiv.bat
+REM RAIV を起動するバッチファイル。コマンドウィンドウを表示する。
+REM なぜ存在するか: ユーザーが簡単にアプリを起動できるようにするため。
+REM 関連ファイル: raiv.py, run_raiv.vbs, install_support.bat
 setlocal
 cd /d "%~dp0"
 

@@ -1,0 +1,38 @@
+name: Release Package
+
+on:
+  workflow_dispatch:
+
+jobs:
+  package-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build package
+        shell: pwsh
+        run: |
+          $outDir = "dist"
+          New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+          $items = @(
+            "assets",
+            "tools",
+            "raiv.py",
+            "viewer.py",
+            "config.py",
+            "keybinding_dialog.py",
+            "run_raiv.bat",
+            "run_raiv.vbs",
+            "install_support.bat",
+            "README.md",
+            "LICENSE"
+          )
+          Compress-Archive -Path $items -DestinationPath "$outDir/RAIV-windows.zip" -Force
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: RAIV-windows
+          path: dist/RAIV-windows.zip

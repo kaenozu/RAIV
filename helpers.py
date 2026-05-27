@@ -1,0 +1,61 @@
+from __future__ import annotations
+
+import re
+import shutil
+from pathlib import Path, PurePosixPath
+
+
+def cleanup_stale_temp_entries(
+    temp_root: Path,
+    archive_prefix: str,
+    work_prefix: str,
+    output_prefix: str,
+) -> tuple[int, list[str]]:
+    removed_count = 0
+    errors: list[str] = []
+    for entry in list(temp_root.iterdir()):
+        try:
+            if entry.is_dir() and entry.name.startswith((archive_prefix, work_prefix)):
+                shutil.rmtree(entry, ignore_errors=True)
+                removed_count += 1
+            elif entry.is_file() and entry.name.startswith(output_prefix) and entry.suffix.lower() == ".png":
+                entry.unlink(missing_ok=True)
+                removed_count += 1
+        except OSError as exc:
+            errors.append(f"Temp cleanup failed: {entry.name} ({exc})")
+    return removed_count, errors
+
+
+def sort_images(paths: list[Path], mode: str = "name") -> list[Path]:
+    if mode == "date":
+        return sorted(paths, key=lambda path: path.stat().st_mtime if path.exists() else 0.0)
+    if mode == "natural":
+        def natural_key(path: Path) -> list[object]:
+            parts = re.split(r"(\d+)", path.name.casefold())
+            key: list[object] = []
+            for part in parts:
+                key.append(int(part) if part.isdigit() else part)
+            return key
+
+        return sorted(paths, key=natural_key)
+    return sorted(paths, key=lambda path: path.name.casefold())
+
+
+def sort_images_by_name_casefold(paths: list[Path]) -> list[Path]:
+    return sort_images(paths, mode="name")
+
+
+def archive_display_name(member_name: str) -> str:
+    return member_name.replace("\\", "/").lstrip("/")
+
+
+def safe_archive_member_parts(member_name: str) -> tuple[str, ...] | None:
+    parts = PurePosixPath(archive_display_name(member_name)).parts
+    safe: list[str] = []
+    for part in parts:
+        if part in {"", ".", "/"}:
+            continue
+        if part == ".." or ":" in part:
+            return None
+        safe.append(re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", part))
+    return tuple(safe) if safe else None

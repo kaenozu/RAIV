@@ -1,0 +1,36 @@
+name: Quality
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  quality:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Ruff
+        run: |
+          ruff check config.py helpers.py tests scripts/check_readme_parity.py
+
+      - name: Mypy
+        run: |
+          mypy config.py helpers.py tests scripts/check_readme_parity.py
+
+      - name: README parity check
+        run: |
+          python scripts/check_readme_parity.py

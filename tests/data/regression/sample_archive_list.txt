@@ -1,0 +1,4 @@
+folder/img1.png
+folder/img2.png
+chapter01/page0001.jpg
+chapter01/page0002.jpg

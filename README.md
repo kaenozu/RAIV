@@ -22,12 +22,66 @@ install_support.bat
 
 RAR/CBR は環境によって、別途 7-Zip、UnRAR、bsdtar のいずれかが必要です。
 
+## 開発者向けセットアップ
+
+開発・テスト時は次の手順を使います。
+
+```powershell
+python -m pip install -r requirements-dev.txt
+pytest
+```
+
+主要ファイル:
+
+- `requirements.txt`: 実行依存
+- `requirements-dev.txt`: 開発依存（pytestを含む）
+- `pytest.ini`: テスト設定
+- `BACKLOG.md`: 実装バックログ（100項目）
+- `pyproject.toml`: Ruff / mypy の設定
+- `.pre-commit-config.yaml`: pre-commit フック設定
+- `.github/workflows/`: CI / 品質 / セキュリティ監査 / 配布パッケージ
+
+## 既知の制約
+
+- Windows 向けアプリです。
+- Real-CUGAN / Real-ESRGAN は外部実行ファイルのため、GPUやドライバ環境に依存します。
+- Real-ESRGAN 選択時の倍率は RAIV 側では 4 倍固定です。
+- RAR/CBR は環境によって外部展開ツール（7z/UnRAR/bsdtar）が必要です。
+
+## トラブルシュート
+
+- 起動できない: `install_support.bat` を再実行し、PySide6 が導入されているか確認。
+- 7z/RAR が開けない: `py7zr` / `rarfile` の導入状況と 7z/UnRAR の存在を確認。
+- 処理が失敗する: エンジン設定の `コマンドテンプレート` と exe パスを確認。
+- 描画品質が想定と違う: OpenCV 未導入時は Lanczos4 が Lanczos3 相当にフォールバックします。
+
+## リリース手順
+
+`RELEASE_CHECKLIST.md` を参照してください。
+
+## セットアップ失敗FAQ
+
+- `PySide6 が見つかりません` と表示される: `install_support.bat` を再実行してから起動してください。
+- `7z/rar を開けない`: `py7zr` / `rarfile` と、必要なら 7-Zip / UnRAR / bsdtar の導入を確認してください。
+- `エンジン実行に失敗する`: エンジン設定の exe パスとコマンドテンプレートを確認してください。
+
+## 同梱ライセンスチェック
+
+配布前に `RELEASE_CHECKLIST.md` の Packaging セクションを使い、`tools` 配下の LICENSE/README/モデル同梱漏れがないことを確認してください。
+
 ## 起動
 
 通常は `run_raiv.vbs` を実行します。コマンドウィンドウを表示したい場合は `run_raiv.bat`、または次のコマンドで起動できます。
 
 ```powershell
 python .\raiv.py
+```
+
+起動時オプション:
+
+```powershell
+python .\raiv.py <path>
+python .\raiv.py <path> --lang en
 ```
 
 ログは右ペインの全般タブにある `ログを表示` でオン/オフできます。
@@ -104,6 +158,12 @@ Real-ESRGAN モデル:
 - 設定中に `Esc` を押すと未割当に戻る
 - `Space` の次ページ送り、`Backspace` の前ページ送りは固定
 
+キーコンフィグ画面:
+
+![Key config overview](assets/readme/key-config.png)
+
+![Key config dialog](assets/readme/key-config-dialog.png)
+
 CPU リサンプルキャッシュをオンにすると、原寸と異なる表示サイズの画像を高品質に作成して保持します。ズーム操作中は速度を優先し、操作が止まってから高品質表示へ切り替わります。オフにすると標準の高速表示になります。
 
 ## 操作
@@ -136,6 +196,10 @@ CPU リサンプルキャッシュをオンにすると、原寸と異なる表�
 - `V`: 画像を上下反転（キーコンフィグで変更可能）
 - `Space`: 次ページへ移動
 - `Backspace`: 前ページへ移動
+
+比較モードイメージ:
+
+![Compare mode GIF](assets/readme/compare-mode.gif)
 
 ## 保存フォルダ
 
@@ -195,12 +259,66 @@ This batch file installs the following Python packages:
 
 Depending on your environment, RAR/CBR support may also require 7-Zip, UnRAR, or bsdtar.
 
+## Developer Setup
+
+For development and tests:
+
+```powershell
+python -m pip install -r requirements-dev.txt
+pytest
+```
+
+Key files:
+
+- `requirements.txt`: runtime dependencies
+- `requirements-dev.txt`: development dependencies (includes pytest)
+- `pytest.ini`: test settings
+- `BACKLOG.md`: implementation backlog (100 items)
+- `pyproject.toml`: Ruff / mypy settings
+- `.pre-commit-config.yaml`: pre-commit hooks
+- `.github/workflows/`: CI / quality / security audit / packaging automation
+
+## Known Constraints
+
+- RAIV targets Windows.
+- Real-CUGAN / Real-ESRGAN are external executables and depend on GPU/driver environment.
+- While Real-ESRGAN is selected, RAIV treats scale as fixed 4x.
+- RAR/CBR may require external extraction tools (7z/UnRAR/bsdtar).
+
+## Troubleshooting
+
+- App does not start: run `install_support.bat` again and verify PySide6 is installed.
+- 7z/RAR cannot be opened: check `py7zr` / `rarfile` and external 7z/UnRAR availability.
+- Processing fails: verify engine command template and executable path in settings.
+- Unexpected resampling quality: without OpenCV, Lanczos4 falls back to Lanczos3-equivalent behavior.
+
+## Release Procedure
+
+See `RELEASE_CHECKLIST.md`.
+
+## Setup Failure FAQ
+
+- `PySide6 not found`: run `install_support.bat` again and relaunch.
+- Archive open failure: verify `py7zr` / `rarfile` and external 7-Zip / UnRAR / bsdtar when needed.
+- Engine execution failure: verify executable path and command template in engine settings.
+
+## Bundled License Checklist
+
+Before distribution, use the Packaging section in `RELEASE_CHECKLIST.md` to confirm LICENSE/README/model files under `tools` are fully included.
+
 ## Launch
 
 Usually, run `run_raiv.vbs`. If you want to show the command window, run `run_raiv.bat`, or launch it manually:
 
 ```powershell
 python .\raiv.py
+```
+
+Startup options:
+
+```powershell
+python .\raiv.py <path>
+python .\raiv.py <path> --lang en
 ```
 
 Logs can be shown or hidden from `Show log` in the General tab.
@@ -277,6 +395,12 @@ Key configuration:
 - Press `Esc` while assigning to clear a binding
 - `Space` for next page and `Backspace` for previous page are fixed
 
+Key configuration screens:
+
+![Key config overview](assets/readme/key-config.png)
+
+![Key config dialog](assets/readme/key-config-dialog.png)
+
 When CPU resample cache is enabled, RAIV creates and keeps high-quality display-size images. During zoom interaction it prioritizes speed, then switches to high-quality rendering after the operation stops. When disabled, RAIV uses the standard fast display path.
 
 ## Controls
@@ -309,6 +433,10 @@ Keyboard:
 - `V`: flip image vertically, configurable
 - `Space`: next page
 - `Backspace`: previous page
+
+Compare mode preview:
+
+![Compare mode GIF](assets/readme/compare-mode.gif)
 
 ## Save Folders
 

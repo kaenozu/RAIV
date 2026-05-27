@@ -1,4 +1,8 @@
 @echo off
+REM install_support.bat
+REM RAIV の Python 依存パッケージをインストールする。
+REM なぜ存在するか: 初回セットアップを自動化し、手順ミスを防ぐため。
+REM 関連ファイル: raiv.py, run_raiv.bat
 setlocal
 
 echo Installing RAIV Python support packages...
