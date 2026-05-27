@@ -78,7 +78,6 @@ from ui_text import translate_binding_text, translate_state_text, translate_ui_t
 try:
     from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QSize, Qt, QTimer, Signal
     from PySide6.QtGui import QColor, QCursor, QIcon, QImage, QImageReader, QKeySequence, QPainter, QPen, QPixmap, QTransform
-    from PySide6.QtOpenGLWidgets import QOpenGLWidget
     from PySide6.QtWidgets import (
         QAbstractItemView,
         QApplication,
@@ -115,6 +114,16 @@ except ImportError as exc:
     raise SystemExit(
         "PySide6 が見つかりません。install_support.bat を実行してください。"
     ) from exc
+
+USE_OPENGL_VIEW = os.environ.get("RAIV_USE_OPENGL", "").strip().lower() in {"1", "true", "yes", "on"}
+ImageViewBaseWidget = QWidget
+if USE_OPENGL_VIEW:
+    try:
+        from PySide6.QtOpenGLWidgets import QOpenGLWidget
+
+        ImageViewBaseWidget = QOpenGLWidget
+    except Exception:
+        ImageViewBaseWidget = QWidget
 
 try:
     import rarfile
@@ -198,6 +207,7 @@ MAX_ENGINE_RETRY_COUNT = 5
 DEFAULT_MAX_SAFE_IMAGE_PIXELS = 120_000_000
 DEFAULT_THUMBNAIL_WORKER_COUNT = 1
 MAX_THUMBNAIL_WORKER_COUNT = 4
+ENABLE_COMPARE_MODE = False
 DEFAULT_BACKGROUND_COLOR = "#000000"
 DIALOG_ACCEPT_TEXT = "OK"
 MODIFIER_LABELS = {
@@ -236,7 +246,6 @@ ACTION_DEFS = [
     ("toggle_fullscreen", "全画面表示/解除"),
     ("toggle_thumbnail_panel", "サムネイル固定/自動表示"),
     ("toggle_side_panel", "右ペイン固定/自動表示"),
-    ("toggle_compare", "比較モードオン/オフ"),
     ("actual_size", "等倍表示"),
     ("fit_view", "画面フィット表示"),
     ("rotate_right", "画像右回転"),
@@ -269,7 +278,6 @@ def default_key_bindings() -> BindingMap:
         "toggle_fullscreen": {"keyboard": None, "mouse": mouse_binding(Qt.MiddleButton)},
         "toggle_thumbnail_panel": {"keyboard": key_binding(Qt.Key_F3), "mouse": None},
         "toggle_side_panel": {"keyboard": key_binding(Qt.Key_F4), "mouse": None},
-        "toggle_compare": {"keyboard": None, "mouse": None},
         "actual_size": {"keyboard": None, "mouse": mouse_binding(Qt.RightButton, double=True)},
         "fit_view": {"keyboard": None, "mouse": mouse_binding(Qt.LeftButton, double=True)},
         "rotate_right": {"keyboard": key_binding(Qt.Key_R), "mouse": None},
@@ -1017,7 +1025,7 @@ class AppSignals(QObject):
     profile_event = Signal(str, float)
 
 
-class GLImageView(QOpenGLWidget):
+class GLImageView(ImageViewBaseWidget):
     pageRequested = Signal(int)
     firstRequested = Signal()
     lastRequested = Signal()
@@ -1385,6 +1393,12 @@ class GLImageView(QOpenGLWidget):
         self.fit_image_size = (image.width(), image.height())
         self.zoomChanged.emit(self.current_scale())
 
+    def resizeEvent(self, event: QEvent) -> None:
+        super().resizeEvent(event)
+        if ImageViewBaseWidget is QWidget:
+            self.resizeGL(self.width(), self.height())
+            self.request_repaint()
+
     def zoom_to_actual_size(self) -> None:
         image = self.current_display_image()
         if image.isNull() or self.fit_scale_anchor is None or self.fit_scale_anchor <= 0:
@@ -1455,6 +1469,12 @@ class GLImageView(QOpenGLWidget):
         painter.fillRect(self.rect(), self.background)
         target = self.image_rect()
         if target.isNull():
+            painter.setPen(QColor("#b8bcc4"))
+            painter.drawText(
+                self.rect().adjusted(24, 24, -24, -24),
+                Qt.AlignCenter | Qt.TextWordWrap,
+                "画像またはフォルダ/アーカイブをドロップしてください\nDrop an image, folder, or archive",
+            )
             painter.end()
             return
 
@@ -1497,6 +1517,12 @@ class GLImageView(QOpenGLWidget):
             if not pixmap.isNull():
                 self.draw_image(painter, target, image, pixmap)
         painter.end()
+
+    def paintEvent(self, event: QEvent) -> None:
+        if ImageViewBaseWidget is QWidget:
+            self.paintGL()
+            return
+        super().paintEvent(event)
 
     def matching_mouse_action(self, event: QEvent, double: bool) -> str | None:
         modifiers = modifier_value(event.modifiers())
@@ -2317,51 +2343,52 @@ class MainWindow(QMainWindow):
         self.background_edit.editingFinished.connect(self.on_background_changed)
         layout.addLayout(background_form)
 
-        layout.addWidget(self.separator())
-        self.compare_check = QCheckBox("比較モード")
-        self.compare_check.setChecked(self.config_data.compare_enabled)
-        self.compare_check.stateChanged.connect(self.on_compare_changed)
-        layout.addWidget(self.compare_check)
         compare_form = QFormLayout()
-        self.compare_slider = QSlider(Qt.Horizontal)
-        self.compare_slider.setRange(0, 1000)
-        self.compare_slider.setValue(self.config_data.compare_split)
-        self.compare_slider.valueChanged.connect(self.on_compare_changed)
-        compare_form.addRow("比較スライダー", self.compare_slider)
-        compare_center_button = QPushButton("中央に戻す")
-        compare_center_button.clicked.connect(self.reset_compare_split)
-        compare_form.addRow("", compare_center_button)
-        compare_color_row = QHBoxLayout()
-        self.compare_line_edit = QLineEdit(self.config_data.compare_line_color)
-        compare_color_button = QPushButton("選択")
-        compare_color_button.clicked.connect(self.choose_compare_line_color)
-        compare_color_row.addWidget(compare_color_button)
-        compare_color_row.addWidget(self.compare_line_edit)
-        compare_form.addRow("境界線色", compare_color_row)
-        self.compare_line_edit.editingFinished.connect(self.on_compare_changed)
-        self.compare_line_width_spin = QSpinBox()
-        self.compare_line_width_spin.setRange(1, 20)
-        self.compare_line_width_spin.setValue(self.config_data.compare_line_width)
-        self.compare_line_width_spin.valueChanged.connect(self.on_compare_changed)
-        compare_form.addRow("境界線の太さ(px)", self.compare_line_width_spin)
-        layout.addLayout(compare_form)
-        self.compare_swap_check = QCheckBox("比較の左右を入れ替える")
-        self.compare_swap_check.setChecked(self.config_data.compare_swap_sides)
-        self.compare_swap_check.stateChanged.connect(self.on_compare_changed)
-        layout.addWidget(self.compare_swap_check)
-        self.compare_shift_check = QCheckBox("比較中はShift+ドラッグで境界線を動かす")
-        self.compare_shift_check.setChecked(self.config_data.compare_shift_drag_moves_boundary)
-        self.compare_shift_check.stateChanged.connect(self.on_compare_changed)
-        layout.addWidget(self.compare_shift_check)
-        self.compare_diff_highlight_check = QCheckBox("差分ハイライト表示")
-        self.compare_diff_highlight_check.setChecked(self.config_data.compare_diff_highlight)
-        self.compare_diff_highlight_check.stateChanged.connect(self.on_compare_changed)
-        layout.addWidget(self.compare_diff_highlight_check)
-        self.compare_diff_threshold_spin = QSpinBox()
-        self.compare_diff_threshold_spin.setRange(0, 255)
-        self.compare_diff_threshold_spin.setValue(self.config_data.compare_diff_threshold)
-        self.compare_diff_threshold_spin.valueChanged.connect(self.on_compare_changed)
-        compare_form.addRow("差分しきい値", self.compare_diff_threshold_spin)
+        if ENABLE_COMPARE_MODE:
+            layout.addWidget(self.separator())
+            self.compare_check = QCheckBox("比較モード")
+            self.compare_check.setChecked(self.config_data.compare_enabled)
+            self.compare_check.stateChanged.connect(self.on_compare_changed)
+            layout.addWidget(self.compare_check)
+            self.compare_slider = QSlider(Qt.Horizontal)
+            self.compare_slider.setRange(0, 1000)
+            self.compare_slider.setValue(self.config_data.compare_split)
+            self.compare_slider.valueChanged.connect(self.on_compare_changed)
+            compare_form.addRow("比較スライダー", self.compare_slider)
+            compare_center_button = QPushButton("中央に戻す")
+            compare_center_button.clicked.connect(self.reset_compare_split)
+            compare_form.addRow("", compare_center_button)
+            compare_color_row = QHBoxLayout()
+            self.compare_line_edit = QLineEdit(self.config_data.compare_line_color)
+            compare_color_button = QPushButton("選択")
+            compare_color_button.clicked.connect(self.choose_compare_line_color)
+            compare_color_row.addWidget(compare_color_button)
+            compare_color_row.addWidget(self.compare_line_edit)
+            compare_form.addRow("境界線色", compare_color_row)
+            self.compare_line_edit.editingFinished.connect(self.on_compare_changed)
+            self.compare_line_width_spin = QSpinBox()
+            self.compare_line_width_spin.setRange(1, 20)
+            self.compare_line_width_spin.setValue(self.config_data.compare_line_width)
+            self.compare_line_width_spin.valueChanged.connect(self.on_compare_changed)
+            compare_form.addRow("境界線の太さ(px)", self.compare_line_width_spin)
+            layout.addLayout(compare_form)
+            self.compare_swap_check = QCheckBox("比較の左右を入れ替える")
+            self.compare_swap_check.setChecked(self.config_data.compare_swap_sides)
+            self.compare_swap_check.stateChanged.connect(self.on_compare_changed)
+            layout.addWidget(self.compare_swap_check)
+            self.compare_shift_check = QCheckBox("比較中はShift+ドラッグで境界線を動かす")
+            self.compare_shift_check.setChecked(self.config_data.compare_shift_drag_moves_boundary)
+            self.compare_shift_check.stateChanged.connect(self.on_compare_changed)
+            layout.addWidget(self.compare_shift_check)
+            self.compare_diff_highlight_check = QCheckBox("差分ハイライト表示")
+            self.compare_diff_highlight_check.setChecked(self.config_data.compare_diff_highlight)
+            self.compare_diff_highlight_check.stateChanged.connect(self.on_compare_changed)
+            layout.addWidget(self.compare_diff_highlight_check)
+            self.compare_diff_threshold_spin = QSpinBox()
+            self.compare_diff_threshold_spin.setRange(0, 255)
+            self.compare_diff_threshold_spin.setValue(self.config_data.compare_diff_threshold)
+            self.compare_diff_threshold_spin.valueChanged.connect(self.on_compare_changed)
+            compare_form.addRow("差分しきい値", self.compare_diff_threshold_spin)
 
         view_form = QFormLayout()
         self.zoom_label = QLabel("ズーム: 100%")
@@ -2683,7 +2710,8 @@ class MainWindow(QMainWindow):
             self.setWindowState(self.windowState() | Qt.WindowMaximized)
         self._apply_splitter_panel_width()
         if self.config_data.side_panel_pinned:
-            self.attach_side_panel_to_splitter(visible=self.config_data.side_panel_visible)
+            self.config_data.side_panel_visible = True
+            self.attach_side_panel_to_splitter(visible=True)
         else:
             self.detach_side_panel_for_overlay(visible=False)
 
@@ -2742,14 +2770,32 @@ class MainWindow(QMainWindow):
         self.config_data.background_color = self.background_edit.text().strip() or DEFAULT_BACKGROUND_COLOR
         self.config_data.cpu_resample_cache_enabled = self.cpu_resample_check.isChecked()
         self.config_data.cpu_resample_algorithm = self.current_resample_algorithm()
-        self.config_data.compare_enabled = self.compare_check.isChecked()
-        self.config_data.compare_split = self.compare_slider.value()
-        self.config_data.compare_line_color = self.compare_line_edit.text().strip() or "#ffffff"
-        self.config_data.compare_line_width = self.compare_line_width_spin.value()
-        self.config_data.compare_swap_sides = self.compare_swap_check.isChecked()
-        self.config_data.compare_shift_drag_moves_boundary = self.compare_shift_check.isChecked()
-        self.config_data.compare_diff_highlight = self.compare_diff_highlight_check.isChecked()
-        self.config_data.compare_diff_threshold = self.compare_diff_threshold_spin.value()
+        if ENABLE_COMPARE_MODE:
+            compare_check = getattr(self, "compare_check", None)
+            compare_slider = getattr(self, "compare_slider", None)
+            compare_line_edit = getattr(self, "compare_line_edit", None)
+            compare_line_width_spin = getattr(self, "compare_line_width_spin", None)
+            compare_swap_check = getattr(self, "compare_swap_check", None)
+            compare_shift_check = getattr(self, "compare_shift_check", None)
+            compare_diff_highlight_check = getattr(self, "compare_diff_highlight_check", None)
+            compare_diff_threshold_spin = getattr(self, "compare_diff_threshold_spin", None)
+            self.config_data.compare_enabled = bool(compare_check.isChecked()) if compare_check is not None else False
+            self.config_data.compare_split = int(compare_slider.value()) if compare_slider is not None else 500
+            self.config_data.compare_line_color = (compare_line_edit.text().strip() if compare_line_edit is not None else "") or "#ffffff"
+            self.config_data.compare_line_width = int(compare_line_width_spin.value()) if compare_line_width_spin is not None else 2
+            self.config_data.compare_swap_sides = bool(compare_swap_check.isChecked()) if compare_swap_check is not None else False
+            self.config_data.compare_shift_drag_moves_boundary = bool(compare_shift_check.isChecked()) if compare_shift_check is not None else False
+            self.config_data.compare_diff_highlight = bool(compare_diff_highlight_check.isChecked()) if compare_diff_highlight_check is not None else False
+            self.config_data.compare_diff_threshold = int(compare_diff_threshold_spin.value()) if compare_diff_threshold_spin is not None else 24
+        else:
+            self.config_data.compare_enabled = False
+            self.config_data.compare_split = 500
+            self.config_data.compare_line_color = "#ffffff"
+            self.config_data.compare_line_width = 2
+            self.config_data.compare_swap_sides = False
+            self.config_data.compare_shift_drag_moves_boundary = False
+            self.config_data.compare_diff_highlight = False
+            self.config_data.compare_diff_threshold = 24
         self.config_data.zoom_label_precision = self.zoom_precision_spin.value()
         self.config_data.page_scroll_interval_ms = self.page_interval_spin.value()
         self.config_data.page_jump_value = self.page_jump_spin.value()
@@ -3398,6 +3444,8 @@ class MainWindow(QMainWindow):
         self.config_data.last_dir = str(images[index].parent)
         self.push_recent_dir(images[index].parent)
         self.persist_config()
+        # Keep navigation keys active after opening from a file dialog.
+        self.viewer.setFocus(Qt.OtherFocusReason)
         if path.is_file() and self.is_image(path):
             self.folder_list_loading = True
             self.deferred_page_steps = 0
@@ -3408,6 +3456,7 @@ class MainWindow(QMainWindow):
         if path.is_file() and self.is_image(path):
             self.leave_archive_mode()
             self.set_image_list([path], 0, defer_work=True)
+            self.viewer.setFocus(Qt.OtherFocusReason)
             self.folder_list_loading = True
             self.deferred_page_steps = 0
             self.config_data.last_dir = str(path.parent)
@@ -3499,6 +3548,7 @@ class MainWindow(QMainWindow):
         self.update_window_title()
         self.rebuild_thumbnail_items()
         self.schedule_prefetch()
+        self.viewer.setFocus(Qt.OtherFocusReason)
         if self.deferred_page_steps:
             steps = self.deferred_page_steps
             self.deferred_page_steps = 0
@@ -3826,7 +3876,6 @@ class MainWindow(QMainWindow):
             "toggle_fullscreen": self.toggle_fullscreen,
             "toggle_thumbnail_panel": self.toggle_thumbnail_panel,
             "toggle_side_panel": self.toggle_side_panel,
-            "toggle_compare": self.toggle_compare_mode,
             "actual_size": self.viewer.zoom_to_actual_size,
             "fit_view": self.viewer.reset_display_state,
             "rotate_right": lambda: self.viewer.rotate_display(90),
@@ -3851,6 +3900,8 @@ class MainWindow(QMainWindow):
                 super().keyPressEvent(event)
 
     def toggle_compare_mode(self) -> None:
+        if not ENABLE_COMPARE_MODE:
+            return
         self.compare_check.setChecked(not self.compare_check.isChecked())
         self.on_compare_changed()
 
@@ -4247,28 +4298,54 @@ class MainWindow(QMainWindow):
         self.viewer.set_actual_zoom_percent(value)
 
     def on_viewer_split_changed(self, value: int) -> None:
-        self.compare_slider.blockSignals(True)
-        self.compare_slider.setValue(value)
-        self.compare_slider.blockSignals(False)
+        slider = getattr(self, "compare_slider", None)
+        if slider is None:
+            return
+        slider.blockSignals(True)
+        slider.setValue(value)
+        slider.blockSignals(False)
         self.config_data.compare_split = value
 
     def reset_compare_split(self) -> None:
-        self.compare_slider.setValue(500)
+        slider = getattr(self, "compare_slider", None)
+        if slider is None:
+            return
+        slider.setValue(500)
         self.on_compare_changed()
 
     def on_compare_changed(self) -> None:
-        line_color = self.compare_line_edit.text().strip()
+        if not ENABLE_COMPARE_MODE:
+            self.config_data.compare_enabled = False
+            self.config_data.compare_diff_highlight = False
+            self.viewer.set_compare(False, 500, "#ffffff", 2, False, False, False, 24)
+            return
+        line_edit = getattr(self, "compare_line_edit", None)
+        compare_check = getattr(self, "compare_check", None)
+        compare_slider = getattr(self, "compare_slider", None)
+        compare_line_width_spin = getattr(self, "compare_line_width_spin", None)
+        compare_swap_check = getattr(self, "compare_swap_check", None)
+        compare_shift_check = getattr(self, "compare_shift_check", None)
+        if (
+            line_edit is None
+            or compare_check is None
+            or compare_slider is None
+            or compare_line_width_spin is None
+            or compare_swap_check is None
+            or compare_shift_check is None
+        ):
+            return
+        line_color = line_edit.text().strip()
         if not re.fullmatch(r"#[0-9a-fA-F]{6}", line_color):
             return
         diff_check = getattr(self, "compare_diff_highlight_check", None)
         diff_spin = getattr(self, "compare_diff_threshold_spin", None)
         self.viewer.set_compare(
-            self.compare_check.isChecked(),
-            self.compare_slider.value(),
+            compare_check.isChecked(),
+            compare_slider.value(),
             line_color,
-            self.compare_line_width_spin.value(),
-            self.compare_swap_check.isChecked(),
-            self.compare_shift_check.isChecked(),
+            compare_line_width_spin.value(),
+            compare_swap_check.isChecked(),
+            compare_shift_check.isChecked(),
             bool(diff_check.isChecked()) if diff_check is not None else False,
             int(diff_spin.value()) if diff_spin is not None else 24,
         )
@@ -4293,9 +4370,12 @@ class MainWindow(QMainWindow):
             self.on_background_changed()
 
     def choose_compare_line_color(self) -> None:
-        color = self.choose_simple_color(self.compare_line_edit.text(), "Select compare divider color" if self.ui_language() == "en" else "比較境界線の色を選択")
+        compare_line_edit = getattr(self, "compare_line_edit", None)
+        if compare_line_edit is None:
+            return
+        color = self.choose_simple_color(compare_line_edit.text(), "Select compare divider color" if self.ui_language() == "en" else "比較境界線の色を選択")
         if color:
-            self.compare_line_edit.setText(color)
+            compare_line_edit.setText(color)
             self.on_compare_changed()
 
     def choose_simple_color(self, current: str, title: str) -> str | None:
@@ -5376,6 +5456,10 @@ def main() -> None:
         app.setWindowIcon(QIcon(str(APP_ICON_ICO)))
     window = MainWindow(initial_path=args.path, forced_language=args.lang)
     window.show()
+    window.raise_()
+    window.activateWindow()
+    QTimer.singleShot(0, window.raise_)
+    QTimer.singleShot(0, window.activateWindow)
     app.exec()
 
 
