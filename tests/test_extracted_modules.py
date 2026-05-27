@@ -16,15 +16,17 @@ def test_archive_member_output_path_rejects_traversal(tmp_path: Path) -> None:
 def test_collect_archive_outputs_sorts_and_formats_names(tmp_path: Path) -> None:
     nested = tmp_path / "folder"
     nested.mkdir()
-    second = nested / "b.png"
-    first = tmp_path / "a.png"
+    second = nested / "10.png"
+    first = nested / "1.png"
+    middle = nested / "2.png"
     second.write_text("2", encoding="utf-8")
     first.write_text("1", encoding="utf-8")
+    middle.write_text("3", encoding="utf-8")
 
     images, names = collect_archive_outputs(tmp_path, lambda path: path.suffix.lower() == ".png")
 
-    assert [path.name for path in images] == ["a.png", "b.png"]
-    assert names[images[1]] == "folder/b.png"
+    assert [path.name for path in images] == ["1.png", "2.png", "10.png"]
+    assert names[images[2]] == "folder/10.png"
 
 
 def test_compose_side_by_side_images_uses_combined_width() -> None:

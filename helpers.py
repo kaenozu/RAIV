@@ -29,16 +29,19 @@ def cleanup_stale_temp_entries(
 def sort_images(paths: list[Path], mode: str = "name") -> list[Path]:
     if mode == "date":
         return sorted(paths, key=lambda path: path.stat().st_mtime if path.exists() else 0.0)
-    if mode == "natural":
-        def natural_key(path: Path) -> list[object]:
-            parts = re.split(r"(\d+)", path.name.casefold())
-            key: list[object] = []
-            for part in parts:
-                key.append(int(part) if part.isdigit() else part)
-            return key
+    return sorted(paths, key=lambda path: natural_sort_key(path.name))
 
-        return sorted(paths, key=natural_key)
-    return sorted(paths, key=lambda path: path.name.casefold())
+
+def natural_sort_key(text: str) -> tuple[tuple[int, int | str], ...]:
+    key: list[tuple[int, int | str]] = []
+    for part in re.split(r"(\d+)", text.casefold()):
+        if not part:
+            continue
+        if part.isdigit():
+            key.append((0, int(part)))
+        else:
+            key.append((1, part))
+    return tuple(key)
 
 
 def sort_images_by_name_casefold(paths: list[Path]) -> list[Path]:

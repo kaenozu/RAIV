@@ -52,6 +52,10 @@ Write-Host ''
 Write-Host 'NOTE:'
 Write-Host '- On modern Windows, the final default-app decision may still require one-time confirmation in Settings.'
 Write-Host '- Opening Default apps now...'
-Start-Process 'ms-settings:defaultapps'
+try {
+    Start-Process 'ms-settings:defaultapps'
+} catch {
+    Write-Host 'Could not open Settings automatically. Please open Default apps manually.'
+}
 Write-Host ''
 Write-Host 'In Settings, choose default apps by file type and set RAIV for the extensions you want.'
