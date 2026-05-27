@@ -1,5 +1,9 @@
 ﻿# User-local settings
 setting.json
+setting.json.bak
+
+# Local crash dumps
+crash-reports/
 
 # Python cache/runtime output
 __pycache__/
