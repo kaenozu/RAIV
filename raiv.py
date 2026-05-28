@@ -4075,7 +4075,8 @@ class MainWindow(QMainWindow):
             return True
         if not rect.contains(local):
             return False
-        return local.x() > SIDE_PANEL_HIDE_MARGIN
+        # Keep overlay visible while the cursor is inside the panel so controls remain operable.
+        return False
 
     def _ensure_side_panel_width(self) -> None:
         self._apply_splitter_panel_width()
@@ -4145,9 +4146,7 @@ class MainWindow(QMainWindow):
     def attach_side_panel_to_splitter(self, visible: bool = True) -> None:
         if self.side_panel_overlay:
             self.side_panel.hide()
-            self.side_panel.setWindowFlags(Qt.Widget)
-            self.side_panel.setParent(None)
-            self.splitter.addWidget(self.side_panel)
+            self.side_panel.setParent(self.splitter, Qt.Widget)
             self.side_panel.installEventFilter(self)
             self.side_panel_overlay = False
         self.apply_side_panel_position_in_splitter()
@@ -4164,13 +4163,13 @@ class MainWindow(QMainWindow):
                     self.side_panel_width = self.current_side_panel_width()
                 self.config_data.side_panel_width = self.side_panel_width
                 self.side_panel.hide()
-                self.side_panel.setParent(None)
-                self.side_panel.setWindowFlags(
+                self.side_panel.setParent(
+                    None,
                     Qt.Window
                     | Qt.WindowTitleHint
                     | Qt.WindowSystemMenuHint
                     | Qt.WindowMinimizeButtonHint
-                    | Qt.WindowCloseButtonHint
+                    | Qt.WindowCloseButtonHint,
                 )
                 self.side_panel.setWindowTitle(f"{APP_NAME} - 設定")
                 self.side_panel.installEventFilter(self)
@@ -4186,17 +4185,19 @@ class MainWindow(QMainWindow):
             if visible:
                 self.side_panel.raise_()
             return
-        if not self.side_panel_overlay:
+        needs_overlay_reparent = self.side_panel.isWindow() or self.side_panel.parent() is None
+        if not self.side_panel_overlay or needs_overlay_reparent:
             if not getattr(self, "initializing", False):
                 self.side_panel_width = self.current_side_panel_width()
             self.config_data.side_panel_width = self.side_panel_width
             self.side_panel.hide()
-            self.side_panel.setParent(self)
+            self.side_panel.setParent(self, Qt.Widget)
             self.side_panel.installEventFilter(self)
             self.side_panel_overlay = True
-            self.adjusting_splitter = True
-            self.splitter.setSizes([max(1, self.splitter.width()), 0])
-            self.adjusting_splitter = False
+            if not needs_overlay_reparent:
+                self.adjusting_splitter = True
+                self.splitter.setSizes([max(1, self.splitter.width()), 0])
+                self.adjusting_splitter = False
         self.position_overlay_side_panel()
         self.side_panel.setVisible(visible)
 
@@ -4448,7 +4449,10 @@ class MainWindow(QMainWindow):
                     self.side_panel.unsetCursor()
                     self.persist_config()
                     return True
-                if event.type() in {QEvent.Leave, QEvent.Hide}:
+                if event.type() == QEvent.Leave:
+                    if self.should_hide_overlay_panel():
+                        QTimer.singleShot(SIDE_PANEL_HIDE_DELAY_MS, self.hide_overlay_side_panel_if_needed)
+                if event.type() == QEvent.Hide:
                     QTimer.singleShot(SIDE_PANEL_HIDE_DELAY_MS, self.hide_overlay_side_panel_if_needed)
         elif watched is self.viewer and event.type() == QEvent.MouseMove:
             if self.is_app_fullscreen():
