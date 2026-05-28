@@ -9,6 +9,7 @@ from helpers import (
     safe_archive_member_parts,
     sort_images,
     sort_images_by_name_casefold,
+    split_command_line,
 )
 
 
@@ -79,3 +80,18 @@ def test_safe_archive_member_parts_rejects_traversal() -> None:
 def test_safe_archive_member_parts_sanitizes_reserved_chars() -> None:
     parts = safe_archive_member_parts("folder/te<st>.png")
     assert parts == ("folder", "te_st_.png")
+
+
+def test_split_command_line_keeps_quoted_paths() -> None:
+    command = '"C:/Program Files/tool.exe" -i "C:/work/a b.png" -o "C:/work/out.png"'
+    parts = split_command_line(command)
+    assert parts[0] == "C:/Program Files/tool.exe"
+    assert parts[2] == "C:/work/a b.png"
+
+
+def test_split_command_line_raises_for_broken_quote() -> None:
+    try:
+        split_command_line('"C:/broken.exe -i input.png')
+    except ValueError:
+        return
+    raise AssertionError("Expected ValueError for malformed command line")

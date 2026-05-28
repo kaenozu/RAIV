@@ -30,9 +30,6 @@ jobs:
         shell: pwsh
         run: |
           python -m PyInstaller --noconfirm --clean --windowed --name RAIV --icon assets/app_icon.ico --add-data "assets;assets" --add-data "tools;tools" --add-data "README.md;." --add-data "LICENSE;." --collect-all PySide6 raiv.py
-          if (Test-Path "register_raiv_file_association.bat") {
-            Copy-Item "register_raiv_file_association.bat" "dist/RAIV/register_raiv_file_association.bat" -Force
-          }
           if (Test-Path "register_raiv_file_association.ps1") {
             Copy-Item "register_raiv_file_association.ps1" "dist/RAIV/register_raiv_file_association.ps1" -Force
           }

@@ -2,7 +2,7 @@
 
 ## Pre-release
 - [ ] Ensure `pytest` passes locally
-- [ ] Confirm app launches via `run_raiv.bat`
+- [ ] Confirm app launches via `RAIV.exe`
 - [ ] Verify image/folder/archive open flows
 - [ ] Verify engine switching (Real-CUGAN / Real-ESRGAN)
 - [ ] Verify compare mode and key bindings

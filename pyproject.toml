@@ -11,3 +11,4 @@ python_version = "3.11"
 ignore_missing_imports = true
 warn_unused_configs = true
 disable_error_code = ["attr-defined", "assignment", "misc"]
+exclude = "^(dist|build)(/|\\\\)"

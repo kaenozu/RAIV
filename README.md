@@ -36,7 +36,7 @@ pytest
 - `requirements.txt`: 実行依存
 - `requirements-dev.txt`: 開発依存（pytestを含む）
 - `pytest.ini`: テスト設定
-- `BACKLOG.md`: 実装バックログ（100項目）
+- `docs/BACKLOG.md`: 実装バックログ（100項目）
 - `pyproject.toml`: Ruff / mypy の設定
 - `.pre-commit-config.yaml`: pre-commit フック設定
 - `.github/workflows/`: CI / 品質 / セキュリティ監査 / 配布パッケージ
@@ -57,7 +57,7 @@ pytest
 
 ## リリース手順
 
-`RELEASE_CHECKLIST.md` を参照してください。
+`docs/RELEASE_CHECKLIST.md` を参照してください。
 
 ## セットアップ失敗FAQ
 
@@ -67,11 +67,11 @@ pytest
 
 ## 同梱ライセンスチェック
 
-配布前に `RELEASE_CHECKLIST.md` の Packaging セクションを使い、`tools` 配下の LICENSE/README/モデル同梱漏れがないことを確認してください。
+配布前に `docs/RELEASE_CHECKLIST.md` の Packaging セクションを使い、`tools` 配下の LICENSE/README/モデル同梱漏れがないことを確認してください。
 
 ## 起動
 
-通常は `run_raiv.vbs` を実行します。コマンドウィンドウを表示したい場合は `run_raiv.bat`、または次のコマンドで起動できます。
+通常は `RAIV.exe` を実行します。開発中にPythonから起動する場合は次のコマンドを使用します。
 
 ```powershell
 python .\raiv.py
@@ -80,10 +80,10 @@ python .\raiv.py
 Windows の既定アプリとして使いたい場合:
 
 ```powershell
-register_raiv_file_association.bat
+powershell -ExecutionPolicy Bypass -File .\register_raiv_file_association.ps1
 ```
 
-このバッチは、対応拡張子を RAIV に関連付けし、既定のアプリ設定画面を開きます。
+このスクリプトは、対応拡張子を RAIV に関連付けし、既定のアプリ設定画面を開きます。
 Windows では拡張子ごとの既定アプリ確定に 1 回の確認が必要な場合があります。
 
 通常の Windows 実行形式（.exe）にしたい場合:
@@ -93,7 +93,11 @@ build_raiv_exe.bat
 ```
 
 ビルド後は `dist\RAIV\RAIV.exe` が生成されます。
-このフォルダ内の `register_raiv_file_association.bat` を実行すると、`.exe` を既定アプリ候補として登録できます。
+このフォルダ内で次を実行すると、`.exe` を既定アプリ候補として登録できます。
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\register_raiv_file_association.ps1
+```
 
 起動時オプション:
 
@@ -291,7 +295,7 @@ Key files:
 - `requirements.txt`: runtime dependencies
 - `requirements-dev.txt`: development dependencies (includes pytest)
 - `pytest.ini`: test settings
-- `BACKLOG.md`: implementation backlog (100 items)
+- `docs/BACKLOG.md`: implementation backlog (100 items)
 - `pyproject.toml`: Ruff / mypy settings
 - `.pre-commit-config.yaml`: pre-commit hooks
 - `.github/workflows/`: CI / quality / security audit / packaging automation
@@ -312,7 +316,7 @@ Key files:
 
 ## Release Procedure
 
-See `RELEASE_CHECKLIST.md`.
+See `docs/RELEASE_CHECKLIST.md`.
 
 ## Setup Failure FAQ
 
@@ -322,11 +326,11 @@ See `RELEASE_CHECKLIST.md`.
 
 ## Bundled License Checklist
 
-Before distribution, use the Packaging section in `RELEASE_CHECKLIST.md` to confirm LICENSE/README/model files under `tools` are fully included.
+Before distribution, use the Packaging section in `docs/RELEASE_CHECKLIST.md` to confirm LICENSE/README/model files under `tools` are fully included.
 
 ## Launch
 
-Usually, run `run_raiv.vbs`. If you want to show the command window, run `run_raiv.bat`, or launch it manually:
+Usually, launch `RAIV.exe`. For development, you can still run from Python:
 
 ```powershell
 python .\raiv.py
@@ -339,7 +343,11 @@ build_raiv_exe.bat
 ```
 
 After build, `dist\RAIV\RAIV.exe` is created.
-Run `dist\RAIV\register_raiv_file_association.bat` to register the built exe as an app choice for supported file extensions.
+Run the following command in `dist\RAIV` to register the built exe as an app choice for supported file extensions.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\register_raiv_file_association.ps1
+```
 
 Startup options:
 

@@ -62,7 +62,7 @@ from archive_utils import (
     find_7z as find_7z_command,
 )
 from exceptions import ArchiveError
-from helpers import archive_display_name, cleanup_stale_temp_entries, sort_images
+from helpers import archive_display_name, cleanup_stale_temp_entries, sort_images, split_command_line
 from logging_utils import (
     LOG_LEVEL_ERROR,
     LOG_LEVEL_INFO,
@@ -201,6 +201,12 @@ THUMBNAIL_HIDE_DELAY_MS = 220
 SIDE_PANEL_HIDE_GRACE_SEC = 0.45
 SIDE_PANEL_HIDE_MARGIN = 36
 SIDE_PANEL_HIDE_DELAY_MS = 220
+SIDE_PANEL_POSITIONS = {
+    "right": "右",
+    "left": "左",
+    "top": "上",
+    "bottom": "下",
+}
 PROFILE_UPDATE_INTERVAL_MS = 500
 DEFAULT_ENGINE_RETRY_COUNT = 1
 MAX_ENGINE_RETRY_COUNT = 5
@@ -366,6 +372,9 @@ class UiConfigDomain:
     side_panel_visible: bool = True
     side_panel_pinned: bool = True
     side_panel_width: int = 460
+    side_panel_position: str = "right"
+    side_panel_detached: bool = False
+    side_panel_window_rect: list[int] | None = None
     splitter_sizes: list[int] | None = None
     last_dir: str = ""
 
@@ -465,6 +474,9 @@ class AppConfig:
     side_panel_visible: bool = True
     side_panel_pinned: bool = True
     side_panel_width: int = 460
+    side_panel_position: str = "right"
+    side_panel_detached: bool = False
+    side_panel_window_rect: list[int] | None = None
     splitter_sizes: list[int] | None = None
     last_dir: str = ""
     page_jump_value: int = 1
@@ -549,6 +561,9 @@ class AppConfig:
             side_panel_visible=self.side_panel_visible,
             side_panel_pinned=self.side_panel_pinned,
             side_panel_width=self.side_panel_width,
+            side_panel_position=self.side_panel_position,
+            side_panel_detached=self.side_panel_detached,
+            side_panel_window_rect=list(self.side_panel_window_rect) if self.side_panel_window_rect is not None else None,
             splitter_sizes=list(self.splitter_sizes) if self.splitter_sizes is not None else None,
             last_dir=self.last_dir,
         )
@@ -629,6 +644,9 @@ class AppConfig:
             self.side_panel_visible = ui.side_panel_visible
             self.side_panel_pinned = ui.side_panel_pinned
             self.side_panel_width = ui.side_panel_width
+            self.side_panel_position = ui.side_panel_position if ui.side_panel_position in SIDE_PANEL_POSITIONS else "right"
+            self.side_panel_detached = bool(ui.side_panel_detached)
+            self.side_panel_window_rect = list(ui.side_panel_window_rect) if ui.side_panel_window_rect is not None else None
             self.splitter_sizes = list(ui.splitter_sizes) if ui.splitter_sizes is not None else None
             self.last_dir = ui.last_dir
 
@@ -1901,6 +1919,8 @@ class MainWindow(QMainWindow):
         self.thumbnail_resize_refresh_timer = QTimer(self)
         self.thumbnail_resize_refresh_timer.setSingleShot(True)
         self.thumbnail_resize_refresh_timer.timeout.connect(self.refresh_thumbnail_icons_for_size)
+        self.detached_panel_dragging = False
+        self.detached_panel_drag_offset = QPoint(0, 0)
         self.profile_stats: dict[str, dict[str, float]] = {}
         self.profile_update_timer = QTimer(self)
         self.profile_update_timer.setSingleShot(True)
@@ -1963,6 +1983,9 @@ class MainWindow(QMainWindow):
         self.thumbnail_panel.installEventFilter(self)
         self.thumbnail_list.installEventFilter(self)
         self.thumbnail_list.viewport().installEventFilter(self)
+        self.restore_side_panel_button = QPushButton("設定を再表示", self.viewer_host)
+        self.restore_side_panel_button.clicked.connect(self.show_side_panel)
+        self.restore_side_panel_button.hide()
 
         self.side_panel = self._build_side_panel()
         self.side_panel.installEventFilter(self)
@@ -2066,6 +2089,17 @@ class MainWindow(QMainWindow):
                 self.thumbnail_panel.raise_()
         self.update_thumbnail_metrics()
         self.thumbnail_height = strip_height if enabled else self.thumbnail_height
+        if hasattr(self, "restore_side_panel_button"):
+            button_width = 140
+            button_height = 32
+            margin = 12
+            self.restore_side_panel_button.setGeometry(rect.width() - button_width - margin, margin, button_width, button_height)
+            should_show_restore = bool(
+                getattr(self.config_data, "side_panel_detached", False)
+                and hasattr(self, "side_panel")
+                and not self.side_panel.isVisible()
+            )
+            self.restore_side_panel_button.setVisible(should_show_restore)
 
     def show_thumbnail_overlay(self) -> None:
         if not self.thumbnails_enabled() or self.thumbnails_pinned():
@@ -2098,15 +2132,31 @@ class MainWindow(QMainWindow):
         root.setObjectName("sidePanel")
         root.setStyleSheet("#sidePanel { background: palette(window); }")
         layout = QVBoxLayout(root)
-        header = QHBoxLayout()
+        header_widget = QWidget(root)
+        header = QHBoxLayout(header_widget)
+        header.setContentsMargins(0, 0, 0, 0)
         header.addWidget(QLabel("設定"))
+        self.side_panel_position_combo = QComboBox()
+        for key, label in SIDE_PANEL_POSITIONS.items():
+            self.side_panel_position_combo.addItem(label, key)
+        current_position = self.config_data.side_panel_position if self.config_data.side_panel_position in SIDE_PANEL_POSITIONS else "right"
+        self.side_panel_position_combo.setCurrentIndex(max(0, self.side_panel_position_combo.findData(current_position)))
+        self.side_panel_position_combo.currentIndexChanged.connect(self.on_side_panel_position_changed)
+        header.addWidget(self.side_panel_position_combo)
+        self.side_panel_detach_check = QCheckBox("分離")
+        self.side_panel_detach_check.setChecked(self.config_data.side_panel_detached)
+        self.side_panel_detach_check.stateChanged.connect(self.on_side_panel_detached_changed)
+        header.addWidget(self.side_panel_detach_check)
         header.addStretch(1)
         self.pin_button = QPushButton("固定")
         self.pin_button.setCheckable(True)
         self.pin_button.setChecked(self.config_data.side_panel_pinned)
+        self.pin_button.setEnabled(not self.config_data.side_panel_detached)
         self.pin_button.toggled.connect(self.on_side_panel_pin_changed)
         header.addWidget(self.pin_button)
-        layout.addLayout(header)
+        self.side_panel_header = header_widget
+        self.side_panel_header.installEventFilter(self)
+        layout.addWidget(header_widget)
         self.pin_button.setText("固定中" if self.config_data.side_panel_pinned else "自動表示")
 
         tabs = QTabWidget()
@@ -2312,6 +2362,11 @@ class MainWindow(QMainWindow):
         self.sort_mode_combo.setCurrentIndex(sort_index)
         self.sort_mode_combo.currentIndexChanged.connect(self.on_sort_mode_changed)
         viewer_form.addRow("並び順", self.sort_mode_combo)
+        self.side_panel_width_spin = QSpinBox()
+        self.side_panel_width_spin.setRange(240, 2000)
+        self.side_panel_width_spin.setValue(max(240, int(self.config_data.side_panel_width)))
+        self.side_panel_width_spin.valueChanged.connect(self.on_side_panel_width_changed)
+        viewer_form.addRow("右ペイン幅(px)", self.side_panel_width_spin)
         layout.addLayout(viewer_form)
         layout.addWidget(self.help_label("表示用に画像をメモリへ先読みする枚数。大きいほどページ送りは速くなりますが、メモリ使用量が増えます。"))
 
@@ -2674,6 +2729,8 @@ class MainWindow(QMainWindow):
             self.pin_button.setText(self.tr_ui("固定中" if self.pin_button.isChecked() else "自動表示"))
         if hasattr(self, "language_label"):
             self.language_label.setText(self.tr_ui("表示言語"))
+        if hasattr(self, "restore_side_panel_button"):
+            self.restore_side_panel_button.setText(self.tr_ui("設定を再表示"))
         self.update_zoom_label(self.viewer.current_scale() if hasattr(self, "viewer") else 1.0)
         self.update_page_position_slider()
         self.refresh_keyconfig_buttons()
@@ -2709,6 +2766,15 @@ class MainWindow(QMainWindow):
         if self.config_data.window_maximized:
             self.setWindowState(self.windowState() | Qt.WindowMaximized)
         self._apply_splitter_panel_width()
+        if hasattr(self, "side_panel_detach_check"):
+            self.side_panel_detach_check.blockSignals(True)
+            self.side_panel_detach_check.setChecked(bool(self.config_data.side_panel_detached))
+            self.side_panel_detach_check.blockSignals(False)
+        if hasattr(self, "pin_button"):
+            self.pin_button.setEnabled(not self.config_data.side_panel_detached)
+        if self.config_data.side_panel_detached:
+            self.detach_side_panel_for_overlay(visible=self.config_data.side_panel_visible)
+            return
         if self.config_data.side_panel_pinned:
             self.config_data.side_panel_visible = True
             self.attach_side_panel_to_splitter(visible=True)
@@ -2829,18 +2895,27 @@ class MainWindow(QMainWindow):
         self.config_data.window_geometry = ""
         side_panel = getattr(self, "side_panel", None)
         pin_button = getattr(self, "pin_button", None)
+        detach_check = getattr(self, "side_panel_detach_check", None)
+        position_combo = getattr(self, "side_panel_position_combo", None)
         self.config_data.side_panel_visible = (
             self.side_panel_visible_before_fullscreen
             if self.is_app_fullscreen()
             else side_panel.isVisible() if side_panel is not None else self.config_data.side_panel_visible
         )
         self.config_data.side_panel_pinned = pin_button.isChecked() if pin_button is not None else self.config_data.side_panel_pinned
+        self.config_data.side_panel_detached = detach_check.isChecked() if detach_check is not None else self.config_data.side_panel_detached
+        position = position_combo.currentData() if position_combo is not None else self.config_data.side_panel_position
+        self.config_data.side_panel_position = position if position in SIDE_PANEL_POSITIONS else "right"
         splitter = getattr(self, "splitter", None)
         if side_panel is not None:
             self.config_data.side_panel_width = int(self.side_panel_width)
+            if self.config_data.side_panel_detached and side_panel.isVisible():
+                rect = side_panel.geometry()
+                self.config_data.side_panel_window_rect = [rect.x(), rect.y(), rect.width(), rect.height()]
         if splitter is not None and not self.side_panel_overlay:
             sizes = self.splitter.sizes()
-            if len(sizes) >= 2 and sizes[1] >= 80:
+            side_index = self.splitter_side_panel_index() if hasattr(self, "splitter_side_panel_index") else 1
+            if len(sizes) >= 2 and sizes[side_index] >= 80:
                 self.config_data.splitter_sizes = sizes
         save_config(self.config_data)
         if log:
@@ -3944,8 +4019,16 @@ class MainWindow(QMainWindow):
     def hide_side_panel(self) -> None:
         self.side_panel.hide()
         self.persist_config()
+        self.layout_viewer_host()
 
     def show_side_panel(self) -> None:
+        if self.config_data.side_panel_detached:
+            self.detach_side_panel_for_overlay(visible=True)
+            self.side_panel.show()
+            self.side_panel.raise_()
+            self.persist_config()
+            self.layout_viewer_host()
+            return
         if self.pin_button.isChecked():
             return
         if not self.side_panel.isVisible():
@@ -3956,8 +4039,14 @@ class MainWindow(QMainWindow):
             self.side_panel.raise_()
             self.request_borderless_fullscreen_enforce()
             self.persist_config()
+            self.layout_viewer_host()
 
     def toggle_side_panel(self) -> None:
+        if self.config_data.side_panel_detached:
+            self.side_panel.setVisible(not self.side_panel.isVisible())
+            self.persist_config()
+            self.layout_viewer_host()
+            return
         self.pin_button.setChecked(not self.pin_button.isChecked())
 
     def toggle_thumbnail_panel(self) -> None:
@@ -3972,6 +4061,8 @@ class MainWindow(QMainWindow):
         return self.side_panel.rect().contains(local)
 
     def should_hide_overlay_panel(self) -> bool:
+        if self.config_data.side_panel_detached:
+            return False
         if self.overlay_resizing or self.overlay_modal_guard or self.pin_button.isChecked() or not self.side_panel_overlay:
             return False
         if QApplication.activePopupWidget() is not None:
@@ -3989,44 +4080,112 @@ class MainWindow(QMainWindow):
     def _ensure_side_panel_width(self) -> None:
         self._apply_splitter_panel_width()
 
+    def current_side_panel_position(self) -> str:
+        position = str(getattr(self.config_data, "side_panel_position", "right"))
+        return position if position in SIDE_PANEL_POSITIONS else "right"
+
+    def splitter_side_panel_index(self) -> int:
+        return 0 if self.current_side_panel_position() in {"left", "top"} else 1
+
+    def splitter_is_horizontal(self) -> bool:
+        return self.current_side_panel_position() in {"left", "right"}
+
+    def splitter_primary_span(self) -> int:
+        if self.splitter_is_horizontal():
+            return self.splitter.width() or self.width()
+        return self.splitter.height() or self.height()
+
+    def apply_side_panel_position_in_splitter(self) -> None:
+        if not hasattr(self, "splitter"):
+            return
+        self.splitter.setOrientation(Qt.Horizontal if self.splitter_is_horizontal() else Qt.Vertical)
+        if self.splitter_side_panel_index() == 0:
+            self.splitter.insertWidget(0, self.side_panel)
+            self.splitter.insertWidget(1, self.viewer_host)
+            self.splitter.setStretchFactor(0, 0)
+            self.splitter.setStretchFactor(1, 1)
+        else:
+            self.splitter.insertWidget(0, self.viewer_host)
+            self.splitter.insertWidget(1, self.side_panel)
+            self.splitter.setStretchFactor(0, 1)
+            self.splitter.setStretchFactor(1, 0)
+
     def current_side_panel_width(self) -> int:
         if self.side_panel_overlay:
             return int(self.side_panel_width)
         sizes = self.splitter.sizes()
-        if len(sizes) >= 2 and sizes[1] > 0:
-            self.side_panel_width = self.clamped_side_panel_width(sizes[1])
+        side_index = self.splitter_side_panel_index()
+        if len(sizes) >= 2 and sizes[side_index] > 0:
+            self.side_panel_width = self.clamped_side_panel_width(sizes[side_index])
             return self.side_panel_width
         return self.clamped_side_panel_width()
 
     def clamped_side_panel_width(self, width: int | None = None) -> int:
-        total = max(1, self.splitter.width() if hasattr(self, "splitter") else self.width())
+        total = max(1, self.splitter_primary_span() if hasattr(self, "splitter") else self.width())
         maximum = max(1, total // 2)
-        minimum = min(max(240, self.side_panel.minimumWidth()), maximum)
+        base_minimum = self.side_panel.minimumWidth() if self.splitter_is_horizontal() else max(180, self.side_panel.minimumHeight())
+        minimum = min(max(240 if self.splitter_is_horizontal() else 180, base_minimum), maximum)
         value = int(self.side_panel_width if width is None else width)
         return max(minimum, min(value, maximum))
 
     def _apply_splitter_panel_width(self) -> None:
-        total = self.splitter.width() or sum(self.splitter.sizes()) or self.width()
+        self.apply_side_panel_position_in_splitter()
+        total = self.splitter_primary_span() or sum(self.splitter.sizes()) or self.width()
         if total <= 0:
             return
         panel_width = self.clamped_side_panel_width()
+        side_index = self.splitter_side_panel_index()
+        sizes = [max(1, total - panel_width), max(1, total - panel_width)]
+        sizes[side_index] = panel_width
+        sizes[1 - side_index] = max(1, total - panel_width)
         self.adjusting_splitter = True
-        self.splitter.setSizes([max(1, total - panel_width), panel_width])
+        self.splitter.setSizes(sizes)
         self.adjusting_splitter = False
 
     def attach_side_panel_to_splitter(self, visible: bool = True) -> None:
         if self.side_panel_overlay:
             self.side_panel.hide()
+            self.side_panel.setWindowFlags(Qt.Widget)
             self.side_panel.setParent(None)
             self.splitter.addWidget(self.side_panel)
             self.side_panel.installEventFilter(self)
             self.side_panel_overlay = False
+        self.apply_side_panel_position_in_splitter()
         self.side_panel.setVisible(visible)
         if visible:
             self._apply_splitter_panel_width()
             QTimer.singleShot(0, self._apply_splitter_panel_width)
 
     def detach_side_panel_for_overlay(self, visible: bool = False) -> None:
+        if self.config_data.side_panel_detached:
+            needs_top_level = (self.side_panel.parent() is not None) or (not self.side_panel.isWindow())
+            if needs_top_level:
+                if not getattr(self, "initializing", False):
+                    self.side_panel_width = self.current_side_panel_width()
+                self.config_data.side_panel_width = self.side_panel_width
+                self.side_panel.hide()
+                self.side_panel.setParent(None)
+                self.side_panel.setWindowFlags(
+                    Qt.Window
+                    | Qt.WindowTitleHint
+                    | Qt.WindowSystemMenuHint
+                    | Qt.WindowMinimizeButtonHint
+                    | Qt.WindowCloseButtonHint
+                )
+                self.side_panel.setWindowTitle(f"{APP_NAME} - 設定")
+                self.side_panel.installEventFilter(self)
+                self.side_panel_overlay = True
+            rect = getattr(self.config_data, "side_panel_window_rect", None)
+            if rect and len(rect) == 4:
+                try:
+                    x, y, w, h = [int(v) for v in rect]
+                    self.side_panel.setGeometry(x, y, max(240, w), max(260, h))
+                except (TypeError, ValueError):
+                    pass
+            self.side_panel.setVisible(visible)
+            if visible:
+                self.side_panel.raise_()
+            return
         if not self.side_panel_overlay:
             if not getattr(self, "initializing", False):
                 self.side_panel_width = self.current_side_panel_width()
@@ -4042,6 +4201,8 @@ class MainWindow(QMainWindow):
         self.side_panel.setVisible(visible)
 
     def position_overlay_side_panel(self) -> None:
+        if self.config_data.side_panel_detached:
+            return
         if not self.side_panel_overlay:
             return
         central = self.centralWidget().geometry()
@@ -4055,18 +4216,69 @@ class MainWindow(QMainWindow):
         if len(sizes) < 2:
             return
         total = sum(sizes)
-        max_panel = max(self.side_panel.minimumWidth(), total // 2)
-        panel = min(sizes[1], max_panel)
-        panel = max(self.side_panel.minimumWidth(), panel)
-        if panel != sizes[1]:
+        side_index = self.splitter_side_panel_index()
+        minimum_size = self.side_panel.minimumWidth() if self.splitter_is_horizontal() else max(180, self.side_panel.minimumHeight())
+        max_panel = max(minimum_size, total // 2)
+        panel = min(sizes[side_index], max_panel)
+        panel = max(minimum_size, panel)
+        if panel != sizes[side_index]:
             self.adjusting_splitter = True
-            self.splitter.setSizes([max(1, total - panel), panel])
+            resized = [max(1, total - panel), max(1, total - panel)]
+            resized[side_index] = panel
+            resized[1 - side_index] = max(1, total - panel)
+            self.splitter.setSizes(resized)
             self.adjusting_splitter = False
         self.side_panel_width = panel
         self.config_data.side_panel_width = panel
+        if hasattr(self, "side_panel_width_spin") and self.side_panel_width_spin.value() != panel:
+            self.side_panel_width_spin.blockSignals(True)
+            self.side_panel_width_spin.setValue(panel)
+            self.side_panel_width_spin.blockSignals(False)
+        self.persist_config()
+
+    def on_side_panel_width_changed(self, value: int) -> None:
+        if not hasattr(self, "side_panel"):
+            return
+        panel = self.clamped_side_panel_width(value)
+        self.side_panel_width = panel
+        self.config_data.side_panel_width = panel
+        if self.side_panel_overlay:
+            self.position_overlay_side_panel()
+        else:
+            self._apply_splitter_panel_width()
+        if self.side_panel_width_spin.value() != panel:
+            self.side_panel_width_spin.blockSignals(True)
+            self.side_panel_width_spin.setValue(panel)
+            self.side_panel_width_spin.blockSignals(False)
+        self.persist_config()
+
+    def on_side_panel_position_changed(self) -> None:
+        if not hasattr(self, "side_panel_position_combo"):
+            return
+        position = self.side_panel_position_combo.currentData() or "right"
+        if position not in SIDE_PANEL_POSITIONS:
+            position = "right"
+        self.config_data.side_panel_position = position
+        if not self.config_data.side_panel_detached and self.pin_button.isChecked():
+            self.attach_side_panel_to_splitter(visible=True)
+        self.persist_config()
+
+    def on_side_panel_detached_changed(self) -> None:
+        detached = bool(self.side_panel_detach_check.isChecked()) if hasattr(self, "side_panel_detach_check") else False
+        self.config_data.side_panel_detached = detached
+        if hasattr(self, "pin_button"):
+            self.pin_button.setEnabled(not detached)
+        if detached:
+            self.detach_side_panel_for_overlay(visible=True)
+        else:
+            if self.pin_button.isChecked():
+                self.attach_side_panel_to_splitter(visible=True)
+            else:
+                self.detach_side_panel_for_overlay(visible=False)
         self.persist_config()
 
     def toggle_fullscreen(self) -> None:
+        detached = bool(self.config_data.side_panel_detached)
         if self.is_app_fullscreen():
             self._show_fullscreen_cursor()
             self.borderless_fullscreen = False
@@ -4080,7 +4292,9 @@ class MainWindow(QMainWindow):
             restore_state = self.before_fullscreen_state & ~Qt.WindowFullScreen
             if restore_state != Qt.WindowNoState:
                 self.setWindowState(restore_state)
-            if self.pin_button.isChecked():
+            if detached:
+                self.detach_side_panel_for_overlay(visible=self.config_data.side_panel_visible)
+            elif self.pin_button.isChecked():
                 self.attach_side_panel_to_splitter(visible=True)
             else:
                 self.detach_side_panel_for_overlay(visible=False)
@@ -4090,7 +4304,9 @@ class MainWindow(QMainWindow):
             self.before_fullscreen_state = self.windowState() & ~Qt.WindowFullScreen
             pinned = self.pin_button.isChecked()
             self.side_panel_visible_before_fullscreen = self.side_panel.isVisible() or pinned
-            if pinned:
+            if detached:
+                self.detach_side_panel_for_overlay(visible=self.config_data.side_panel_visible)
+            elif pinned:
                 self.attach_side_panel_to_splitter(visible=True)
             else:
                 self.detach_side_panel_for_overlay(visible=False)
@@ -4104,7 +4320,9 @@ class MainWindow(QMainWindow):
             if target.isValid():
                 self.setGeometry(target)
             self.show()
-            if pinned:
+            if detached:
+                self.detach_side_panel_for_overlay(visible=self.config_data.side_panel_visible)
+            elif pinned:
                 self.attach_side_panel_to_splitter(visible=True)
             else:
                 self.side_panel.setParent(self)
@@ -4155,6 +4373,19 @@ class MainWindow(QMainWindow):
         if watched is getattr(self, "viewer_host", None):
             if event.type() == QEvent.Resize:
                 self.layout_viewer_host()
+        if watched is getattr(self, "side_panel_header", None) and self.config_data.side_panel_detached:
+            if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
+                self.detached_panel_dragging = True
+                self.detached_panel_drag_offset = event.globalPosition().toPoint() - self.side_panel.frameGeometry().topLeft()
+                return True
+            if event.type() == QEvent.MouseMove and self.detached_panel_dragging and (event.buttons() & Qt.LeftButton):
+                new_pos = event.globalPosition().toPoint() - self.detached_panel_drag_offset
+                self.side_panel.move(new_pos)
+                return True
+            if event.type() == QEvent.MouseButtonRelease and self.detached_panel_dragging:
+                self.detached_panel_dragging = False
+                self.persist_config()
+                return True
         if watched is getattr(self, "thumbnail_panel", None) or watched is getattr(self, "thumbnail_list", None) or watched is getattr(getattr(self, "thumbnail_list", None), "viewport", lambda: None)():
             if event.type() in {QEvent.MouseButtonPress, QEvent.MouseMove, QEvent.MouseButtonRelease}:
                 global_pos = event.globalPosition().toPoint() if hasattr(event, "globalPosition") else QCursor.pos()
@@ -4185,7 +4416,20 @@ class MainWindow(QMainWindow):
             elif event.type() == QEvent.MouseMove and not self.thumbnails_pinned():
                 self.show_thumbnail_overlay()
         if watched is getattr(self, "side_panel", None):
-            if self.side_panel_overlay and not self.pin_button.isChecked():
+            if self.config_data.side_panel_detached:
+                if event.type() == QEvent.Close:
+                    self.config_data.side_panel_visible = False
+                    self.persist_config()
+                    self.layout_viewer_host()
+                elif event.type() == QEvent.Hide and not self.closing:
+                    self.config_data.side_panel_visible = False
+                    self.persist_config()
+                    self.layout_viewer_host()
+                elif event.type() == QEvent.Show and not self.closing:
+                    self.config_data.side_panel_visible = True
+                    self.persist_config()
+                    self.layout_viewer_host()
+            if self.side_panel_overlay and not self.pin_button.isChecked() and not self.config_data.side_panel_detached:
                 if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton and event.position().x() <= 18:
                     self.overlay_resizing = True
                     self.side_panel.setCursor(Qt.SizeHorCursor)
@@ -4215,7 +4459,7 @@ class MainWindow(QMainWindow):
                     self.show_thumbnail_overlay()
                 elif self.thumbnail_overlay_visible and not self.is_cursor_over_thumbnail_panel():
                     self.hide_thumbnail_overlay()
-            if not self.pin_button.isChecked():
+            if not self.pin_button.isChecked() and not self.config_data.side_panel_detached:
                 trigger_width = min(self.clamped_side_panel_width(), max(1, self.viewer.width() // 2))
                 x = event.position().x()
                 if x >= self.viewer.width() - trigger_width:
@@ -4250,6 +4494,8 @@ class MainWindow(QMainWindow):
             self.persist_config()
 
     def on_side_panel_pin_changed(self, pinned: bool) -> None:
+        if self.config_data.side_panel_detached:
+            return
         self.pin_button.setText(self.tr_ui("固定中" if pinned else "自動表示"))
         if pinned:
             self.attach_side_panel_to_splitter(visible=True)
@@ -4476,6 +4722,7 @@ class MainWindow(QMainWindow):
             "viewer_prefetch_spin",
             "thumbnail_worker_spin",
             "sort_mode_combo",
+            "side_panel_width_spin",
             "cpu_resample_check",
             "cpu_resample_combo",
             "background_edit",
@@ -5043,26 +5290,46 @@ class MainWindow(QMainWindow):
         return not image.isNull() and image.height() >= height_threshold
 
     def run_upscale_engine(self, source: Path) -> dict:
-        output_path, temporary_output = self.prepare_output_path(source)
+        output_path, command_output_path, persist_output = self.prepare_output_path(source)
         values = {
             "input": str(source),
-            "output": str(output_path),
+            "output": str(command_output_path),
             "scale": self.effective_scale(),
             "denoise": self.denoise_combo.currentText(),
             "tile": self.tile_spin.value(),
             "model": self.realesrgan_model_combo.currentText(),
         }
         command = self.active_command_template().format(**values)
+        try:
+            command_args = split_command_line(command)
+        except ValueError as exc:
+            return {
+                "path": source,
+                "code": 1,
+                "output": f"Invalid command template: {exc}",
+                "image": QImage(),
+                "elapsed_ms": 0.0,
+                "attempts": 1,
+            }
+        if not command_args:
+            return {
+                "path": source,
+                "code": 1,
+                "output": "Invalid command template: empty command",
+                "image": QImage(),
+                "elapsed_ms": 0.0,
+                "attempts": 1,
+            }
         attempts = max(1, int(self.config_data.engine_retry_count) + 1)
         started = time.perf_counter()
         outputs: list[str] = []
         for attempt in range(1, attempts + 1):
             try:
                  completed = subprocess.run(
-                     command,
+                     command_args,
                      stdout=subprocess.PIPE,
                      stderr=subprocess.STDOUT,
-                     shell=True,
+                     shell=False,
                      cwd=str(self.command_working_dir(command)),
                      text=True,
                      encoding="utf-8",
@@ -5072,26 +5339,31 @@ class MainWindow(QMainWindow):
                  )
             except Exception as exc:
                 outputs.append(f"Attempt {attempt}/{attempts}: {exc}")
-                completed = None
-            else:
-                outputs.append(f"Attempt {attempt}/{attempts} exit={completed.returncode}")
-                if completed.stdout.strip():
-                    outputs.append(completed.stdout.strip())
-                if completed.returncode == 0:
-                    image = QImage(str(output_path)) if output_path.exists() else QImage()
-                    if not image.isNull():
-                        if temporary_output and output_path.exists():
-                            output_path.unlink(missing_ok=True)
-                        return {
-                            "path": source,
-                            "code": 0,
-                            "output": "\n".join(outputs),
-                            "image": image,
-                            "elapsed_ms": (time.perf_counter() - started) * 1000,
-                            "attempts": attempt,
-                        }
-            if temporary_output and output_path.exists():
-                output_path.unlink(missing_ok=True)
+                if command_output_path.exists():
+                    command_output_path.unlink(missing_ok=True)
+                continue
+            outputs.append(f"Attempt {attempt}/{attempts} exit={completed.returncode}")
+            if completed.stdout.strip():
+                outputs.append(completed.stdout.strip())
+            if completed.returncode == 0:
+                image = QImage(str(command_output_path)) if command_output_path.exists() else QImage()
+                if not image.isNull():
+                    if persist_output:
+                        output_path.parent.mkdir(parents=True, exist_ok=True)
+                        command_output_path.replace(output_path)
+                    else:
+                        if command_output_path.exists():
+                            command_output_path.unlink(missing_ok=True)
+                    return {
+                        "path": source,
+                        "code": 0,
+                        "output": "\n".join(outputs),
+                        "image": image,
+                        "elapsed_ms": (time.perf_counter() - started) * 1000,
+                        "attempts": attempt,
+                    }
+            if command_output_path.exists():
+                command_output_path.unlink(missing_ok=True)
         return {
             "path": source,
             "code": 1,
@@ -5159,13 +5431,16 @@ class MainWindow(QMainWindow):
         path = self.cache_output_path(source, create_dir=False)
         return path if path.exists() else None
 
-    def prepare_output_path(self, source: Path) -> tuple[Path, bool]:
+    def prepare_output_path(self, source: Path) -> tuple[Path, Path, bool]:
         if self.save_scale_check.isChecked() and not self.archive_mode_active():
-            return self.cache_output_path(source, create_dir=True), False
+            final_output = self.cache_output_path(source, create_dir=True)
+            fd, text_path = tempfile.mkstemp(prefix=TEMP_OUTPUT_PREFIX, suffix=".png", dir=self.process_temp_dir)
+            os.close(fd)
+            return final_output, Path(text_path), True
         fd, text_path = tempfile.mkstemp(prefix=TEMP_OUTPUT_PREFIX, suffix=".png", dir=self.process_temp_dir)
         os.close(fd)
-        Path(text_path).unlink(missing_ok=True)
-        return Path(text_path), True
+        temp_output = Path(text_path)
+        return temp_output, temp_output, False
 
     def cache_output_path(self, source: Path, create_dir: bool) -> Path:
         engine_model = self.cache_model_name()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import shlex
 import shutil
 from pathlib import Path, PurePosixPath
 
@@ -16,7 +17,7 @@ def cleanup_stale_temp_entries(
     for entry in list(temp_root.iterdir()):
         try:
             if entry.is_dir() and entry.name.startswith((archive_prefix, work_prefix)):
-                shutil.rmtree(entry, ignore_errors=True)
+                shutil.rmtree(entry)
                 removed_count += 1
             elif entry.is_file() and entry.name.startswith(output_prefix) and entry.suffix.lower() == ".png":
                 entry.unlink(missing_ok=True)
@@ -24,6 +25,17 @@ def cleanup_stale_temp_entries(
         except OSError as exc:
             errors.append(f"Temp cleanup failed: {entry.name} ({exc})")
     return removed_count, errors
+
+
+def split_command_line(command: str) -> list[str]:
+    parts = [part for part in shlex.split(command, posix=False) if part]
+    normalized: list[str] = []
+    for part in parts:
+        if len(part) >= 2 and part[0] == part[-1] and part[0] in {'"', "'"}:
+            normalized.append(part[1:-1])
+        else:
+            normalized.append(part)
+    return normalized
 
 
 def sort_images(paths: list[Path], mode: str = "name") -> list[Path]:
