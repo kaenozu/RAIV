@@ -10,7 +10,7 @@ The format is based on Keep a Changelog.
 - 
 
 ### Changed
-- 
+- Internal maintenance: synced upstream/main history into fork main while preserving RAIV v1 content.
 
 ### Fixed
 - 
