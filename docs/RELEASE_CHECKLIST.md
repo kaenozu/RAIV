@@ -1,7 +1,7 @@
 # Release Checklist
 
 ## Pre-release
-- [ ] Ensure `pytest` passes locally
+- [x] Ensure `pytest` passes locally
 - [ ] Confirm app launches via `RAIV.exe`
 - [ ] Verify image/folder/archive open flows
 - [ ] Verify engine switching (Real-CUGAN / Real-ESRGAN)
@@ -15,6 +15,6 @@
 - [ ] Include `README.md` and `LICENSE`
 
 ## Post-release
-- [ ] Tag release in Git
-- [ ] Update `CHANGELOG.md`
+- [x] Tag release in Git
+- [x] Update `CHANGELOG.md`
 - [ ] Publish release notes

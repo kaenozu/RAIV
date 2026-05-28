@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
+
 from PySide6.QtCore import Qt
 
+import config
 from config import (
     IMAGE_EXTENSIONS,
     MODIFIER_MASK,
@@ -85,3 +88,57 @@ def test_image_extensions_include_new_formats() -> None:
     assert ".tiff" in IMAGE_EXTENSIONS
     assert ".avif" in IMAGE_EXTENSIONS
     assert ".heic" in IMAGE_EXTENSIONS
+
+
+def test_load_config_preserves_detached_side_panel_fields(tmp_path, monkeypatch) -> None:
+    config_path = tmp_path / "setting.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "engine": "realcugan",
+                "engine_retry_count": 2,
+                "thumbnail_worker_count": 3,
+                "side_panel_detached": True,
+                "side_panel_position": "left",
+                "side_panel_width": 420,
+                "side_panel_window_rect": [120, 80, 500, 700],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config, "CONFIG_PATH", config_path)
+
+    loaded = config.load_config()
+
+    assert loaded.engine_retry_count == 2
+    assert loaded.thumbnail_worker_count == 3
+    assert loaded.side_panel_detached is True
+    assert loaded.side_panel_position == "left"
+    assert loaded.side_panel_width == 420
+    assert loaded.side_panel_window_rect == [120, 80, 500, 700]
+
+
+def test_load_config_normalizes_invalid_side_panel_fields(tmp_path, monkeypatch) -> None:
+    config_path = tmp_path / "setting.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "engine": "realcugan",
+                "side_panel_detached": "yes",
+                "side_panel_position": "diagonal",
+                "side_panel_width": 100,
+                "side_panel_window_rect": [10, "bad", 300, 400],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config, "CONFIG_PATH", config_path)
+
+    loaded = config.load_config()
+
+    assert loaded.side_panel_detached is False
+    assert loaded.side_panel_position == "right"
+    assert loaded.side_panel_width == 240
+    assert loaded.side_panel_window_rect is None

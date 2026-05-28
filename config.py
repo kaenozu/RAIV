@@ -272,9 +272,21 @@ class AppConfig:
     scale: int = 2
     denoise: int = 0
     tile: int = 0
+    engine_retry_count: int = 1
     realesrgan_model: str = "realesr-animevideov3"
     realcugan_prefetch_count: int = 10
     viewer_prefetch_count: int = 20
+    thumbnail_worker_count: int = 1
+    sort_mode: str = "name"
+    recent_dirs: list[str] = field(default_factory=list)
+    bookmarks: list[str] = field(default_factory=list)
+    favorites: list[str] = field(default_factory=list)
+    slideshow_enabled: bool = False
+    slideshow_interval_sec: int = 3
+    slideshow_pause_if_processing: bool = True
+    spread_mode_enabled: bool = False
+    exif_auto_orient: bool = True
+    engine_presets: dict[str, dict[str, object]] = field(default_factory=dict)
     save_upscaled_to_scale_folder: bool = False
     use_scale_folder_cache: bool = True
     skip_realcugan_for_tall_images: bool = True
@@ -288,8 +300,12 @@ class AppConfig:
     compare_line_width: int = 2
     compare_swap_sides: bool = False
     compare_shift_drag_moves_boundary: bool = False
+    compare_diff_highlight: bool = False
+    compare_diff_threshold: int = 24
+    zoom_label_precision: int = 0
     hide_cursor_in_fullscreen: bool = False
     show_log_panel: bool = False
+    log_level: str = "INFO"
     show_profile_panel: bool = False
     ui_language: str = "ja"
     thumbnail_enabled: bool = True
@@ -312,8 +328,13 @@ class AppConfig:
     side_panel_visible: bool = True
     side_panel_pinned: bool = True
     side_panel_width: int = 460
+    side_panel_position: str = "right"
+    side_panel_detached: bool = False
+    side_panel_window_rect: list[int] | None = None
     splitter_sizes: list[int] | None = None
     last_dir: str = ""
+    page_jump_value: int = 1
+    max_safe_image_pixels: int = 120_000_000
 
 
 def set_process_app_user_model_id() -> None:
@@ -416,6 +437,17 @@ def load_config() -> AppConfig:
             config.cpu_resample_algorithm = "lanczos3"
         if config.ui_language not in {"ja", "en"}:
             config.ui_language = "ja"
+        if config.side_panel_position not in {"left", "right", "top", "bottom"}:
+            config.side_panel_position = "right"
+        if not isinstance(config.side_panel_detached, bool):
+            config.side_panel_detached = False
+        if not isinstance(config.side_panel_width, int):
+            config.side_panel_width = 460
+        config.side_panel_width = max(240, config.side_panel_width)
+        if not isinstance(config.side_panel_window_rect, list) or len(config.side_panel_window_rect) != 4:
+            config.side_panel_window_rect = None
+        elif not all(isinstance(value, int) for value in config.side_panel_window_rect):
+            config.side_panel_window_rect = None
         config.key_bindings = normalize_key_bindings(getattr(config, "key_bindings", None))
         if BUNDLED_REALCUGAN_EXE.exists() and not command_executable_exists(config.realcugan_command_template):
             config.realcugan_command_template = DEFAULT_REALCUGAN_TEMPLATE
