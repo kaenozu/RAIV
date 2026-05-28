@@ -6,12 +6,10 @@ $scriptDir = Split-Path -Parent $PSCommandPath
 $progId = 'RAIV.Image'
 $extensions = @('.png', '.jpg', '.jpeg', '.webp', '.bmp', '.gif', '.zip', '.cbz', '.rar', '.cbr', '.7z', '.cb7')
 $raivExe = Join-Path $scriptDir 'RAIV.exe'
-if (Test-Path $raivExe) {
-    $openCommand = '"{0}" "{1}"' -f $raivExe, '%1'
-} else {
-    $vbsPath = Join-Path $scriptDir 'run_raiv.vbs'
-    $openCommand = 'wscript.exe "{0}" "{1}"' -f $vbsPath, '%1'
+if (-not (Test-Path $raivExe)) {
+    throw "RAIV.exe was not found. Place this script in the same folder as RAIV.exe."
 }
+$openCommand = '"{0}" "{1}"' -f $raivExe, '%1'
 
 function Invoke-RegAdd {
     param(

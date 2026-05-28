@@ -48,7 +48,6 @@ if not exist "dist\RAIV" (
     exit /b 1
 )
 
-copy /Y "register_raiv_file_association.bat" "dist\RAIV\register_raiv_file_association.bat" >nul
 copy /Y "register_raiv_file_association.ps1" "dist\RAIV\register_raiv_file_association.ps1" >nul
 if exist "dist\RAIV\RAIV.exe" (
     echo.
@@ -57,7 +56,7 @@ if exist "dist\RAIV\RAIV.exe" (
     echo Executable: dist\RAIV\RAIV.exe
     echo.
     echo To register file association from the built app folder:
-    echo   dist\RAIV\register_raiv_file_association.bat
+    echo   powershell -ExecutionPolicy Bypass -File dist\RAIV\register_raiv_file_association.ps1
     exit /b 0
 )
 

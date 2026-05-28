@@ -5,7 +5,7 @@
 - 
 
 ## Validation
-- [ ] Launched app via `run_raiv.bat`
+- [ ] Launched app via `RAIV.exe` (or `python .\raiv.py` during development)
 - [ ] Opened image folder and navigated pages
 - [ ] Verified compare mode behavior
 - [ ] Verified key bindings related changes (if any)
