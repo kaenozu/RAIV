@@ -4,7 +4,7 @@ from pathlib import Path
 
 from PySide6.QtGui import QColor, QImage
 
-from archive_utils import archive_member_output_path, collect_archive_outputs
+from archive_utils import archive_member_output_path, collect_archive_outputs, find_unsafe_archive_members
 from renderer_utils import compose_side_by_side_images, iter_difference_points
 from ui_text import UI_TEXT_EN, translate_binding_text, translate_state_text, translate_ui_text
 
@@ -27,6 +27,16 @@ def test_collect_archive_outputs_sorts_and_formats_names(tmp_path: Path) -> None
 
     assert [path.name for path in images] == ["1.png", "2.png", "10.png"]
     assert names[images[2]] == "folder/10.png"
+
+
+def test_find_unsafe_archive_members_detects_traversal_paths() -> None:
+    unsafe = find_unsafe_archive_members(["safe/a.png", "../evil.png", "folder/ok.jpg"])
+    assert unsafe == ["../evil.png"]
+
+
+def test_find_unsafe_archive_members_detects_drive_prefix() -> None:
+    unsafe = find_unsafe_archive_members(["C:/evil.png", "safe.png"])
+    assert unsafe == ["C:/evil.png"]
 
 
 def test_compose_side_by_side_images_uses_combined_width() -> None:

@@ -4,6 +4,7 @@ import re
 import shlex
 import shutil
 from pathlib import Path, PurePosixPath
+from typing import Mapping
 
 
 def cleanup_stale_temp_entries(
@@ -36,6 +37,13 @@ def split_command_line(command: str) -> list[str]:
         else:
             normalized.append(part)
     return normalized
+
+
+def format_command_template(command_template: str, values: Mapping[str, object]) -> str:
+    try:
+        return command_template.format(**values)
+    except (KeyError, ValueError, IndexError) as exc:
+        raise ValueError(str(exc)) from exc
 
 
 def sort_images(paths: list[Path], mode: str = "name") -> list[Path]:

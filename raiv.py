@@ -62,7 +62,7 @@ from archive_utils import (
     find_7z as find_7z_command,
 )
 from exceptions import ArchiveError
-from helpers import archive_display_name, cleanup_stale_temp_entries, sort_images, split_command_line
+from helpers import archive_display_name, cleanup_stale_temp_entries, format_command_template, sort_images, split_command_line
 from logging_utils import (
     LOG_LEVEL_ERROR,
     LOG_LEVEL_INFO,
@@ -216,6 +216,7 @@ MAX_THUMBNAIL_WORKER_COUNT = 4
 ENABLE_COMPARE_MODE = False
 DEFAULT_BACKGROUND_COLOR = "#000000"
 DIALOG_ACCEPT_TEXT = "OK"
+SETTINGS_TABS = ("realcugan", "general", "keyconfig")
 MODIFIER_LABELS = {
     Qt.ControlModifier.value: "Ctrl",
     Qt.ShiftModifier.value: "Shift",
@@ -729,6 +730,45 @@ def normalize_key_bindings(value: object) -> BindingMap:
     return normalized
 
 
+def normalize_loaded_config_fields(config: AppConfig) -> AppConfig:
+    if config.engine not in ENGINE_LABELS:
+        config.engine = ENGINE_REALCUGAN
+    if config.realesrgan_model not in REALESRGAN_MODELS:
+        config.realesrgan_model = REALESRGAN_MODELS[0]
+    if config.cpu_resample_algorithm not in RESAMPLE_ALGORITHMS:
+        config.cpu_resample_algorithm = "lanczos3"
+    if config.ui_language not in {"ja", "en"}:
+        config.ui_language = "ja"
+    config.log_level = sanitize_log_level(config.log_level)
+    config.zoom_label_precision = max(0, min(3, int(getattr(config, "zoom_label_precision", 0))))
+    config.page_jump_value = max(1, int(getattr(config, "page_jump_value", 1)))
+    if config.sort_mode not in SORT_MODES:
+        config.sort_mode = "name"
+    config.thumbnail_worker_count = max(1, min(MAX_THUMBNAIL_WORKER_COUNT, int(getattr(config, "thumbnail_worker_count", DEFAULT_THUMBNAIL_WORKER_COUNT))))
+    if not isinstance(config.recent_dirs, list):
+        config.recent_dirs = []
+    config.recent_dirs = [str(item) for item in config.recent_dirs if isinstance(item, str) and item.strip()][:10]
+    if not isinstance(config.bookmarks, list):
+        config.bookmarks = []
+    config.bookmarks = [str(item) for item in config.bookmarks if isinstance(item, str) and item.strip()]
+    if not isinstance(config.favorites, list):
+        config.favorites = []
+    config.favorites = [str(item) for item in config.favorites if isinstance(item, str) and item.strip()]
+    config.slideshow_enabled = bool(getattr(config, "slideshow_enabled", False))
+    config.slideshow_interval_sec = max(1, min(30, int(getattr(config, "slideshow_interval_sec", 3))))
+    config.slideshow_pause_if_processing = bool(getattr(config, "slideshow_pause_if_processing", True))
+    config.spread_mode_enabled = bool(getattr(config, "spread_mode_enabled", False))
+    config.exif_auto_orient = bool(getattr(config, "exif_auto_orient", True))
+    if not isinstance(config.engine_presets, dict):
+        config.engine_presets = {}
+    config.engine_retry_count = max(0, min(MAX_ENGINE_RETRY_COUNT, int(getattr(config, "engine_retry_count", DEFAULT_ENGINE_RETRY_COUNT))))
+    config.compare_diff_highlight = bool(getattr(config, "compare_diff_highlight", False))
+    config.compare_diff_threshold = max(0, min(255, int(getattr(config, "compare_diff_threshold", 24))))
+    config.max_safe_image_pixels = max(1_000_000, int(getattr(config, "max_safe_image_pixels", DEFAULT_MAX_SAFE_IMAGE_PIXELS)))
+    config.key_bindings = normalize_key_bindings(getattr(config, "key_bindings", None))
+    return config
+
+
 def load_config() -> AppConfig:
     if not CONFIG_PATH.exists():
         return AppConfig()
@@ -743,41 +783,7 @@ def load_config() -> AppConfig:
             config.realesrgan_command_template = DEFAULT_REALESRGAN_TEMPLATE
         if "realcugan_command_template" not in data:
             config.realcugan_command_template = config.command_template or DEFAULT_REALCUGAN_TEMPLATE
-        if config.engine not in ENGINE_LABELS:
-            config.engine = ENGINE_REALCUGAN
-        if config.realesrgan_model not in REALESRGAN_MODELS:
-            config.realesrgan_model = REALESRGAN_MODELS[0]
-        if config.cpu_resample_algorithm not in RESAMPLE_ALGORITHMS:
-            config.cpu_resample_algorithm = "lanczos3"
-        if config.ui_language not in {"ja", "en"}:
-            config.ui_language = "ja"
-        config.log_level = sanitize_log_level(config.log_level)
-        config.zoom_label_precision = max(0, min(3, int(getattr(config, "zoom_label_precision", 0))))
-        config.page_jump_value = max(1, int(getattr(config, "page_jump_value", 1)))
-        if config.sort_mode not in SORT_MODES:
-            config.sort_mode = "name"
-        config.thumbnail_worker_count = max(1, min(MAX_THUMBNAIL_WORKER_COUNT, int(getattr(config, "thumbnail_worker_count", DEFAULT_THUMBNAIL_WORKER_COUNT))))
-        if not isinstance(config.recent_dirs, list):
-            config.recent_dirs = []
-        config.recent_dirs = [str(item) for item in config.recent_dirs if isinstance(item, str) and item.strip()][:10]
-        if not isinstance(config.bookmarks, list):
-            config.bookmarks = []
-        config.bookmarks = [str(item) for item in config.bookmarks if isinstance(item, str) and item.strip()]
-        if not isinstance(config.favorites, list):
-            config.favorites = []
-        config.favorites = [str(item) for item in config.favorites if isinstance(item, str) and item.strip()]
-        config.slideshow_enabled = bool(getattr(config, "slideshow_enabled", False))
-        config.slideshow_interval_sec = max(1, min(30, int(getattr(config, "slideshow_interval_sec", 3))))
-        config.slideshow_pause_if_processing = bool(getattr(config, "slideshow_pause_if_processing", True))
-        config.spread_mode_enabled = bool(getattr(config, "spread_mode_enabled", False))
-        config.exif_auto_orient = bool(getattr(config, "exif_auto_orient", True))
-        if not isinstance(config.engine_presets, dict):
-            config.engine_presets = {}
-        config.engine_retry_count = max(0, min(MAX_ENGINE_RETRY_COUNT, int(getattr(config, "engine_retry_count", DEFAULT_ENGINE_RETRY_COUNT))))
-        config.compare_diff_highlight = bool(getattr(config, "compare_diff_highlight", False))
-        config.compare_diff_threshold = max(0, min(255, int(getattr(config, "compare_diff_threshold", 24))))
-        config.max_safe_image_pixels = max(1_000_000, int(getattr(config, "max_safe_image_pixels", DEFAULT_MAX_SAFE_IMAGE_PIXELS)))
-        config.key_bindings = normalize_key_bindings(getattr(config, "key_bindings", None))
+        config = normalize_loaded_config_fields(config)
         if BUNDLED_REALCUGAN_EXE.exists() and not command_executable_exists(config.realcugan_command_template):
             config.realcugan_command_template = DEFAULT_REALCUGAN_TEMPLATE
         if BUNDLED_REALESRGAN_EXE.exists() and not command_executable_exists(config.realesrgan_command_template):
@@ -798,33 +804,7 @@ def load_config() -> AppConfig:
                 CONFIG_PATH.write_text(CONFIG_BACKUP_PATH.read_text(encoding="utf-8-sig"), encoding="utf-8")
                 data = json.loads(CONFIG_PATH.read_text(encoding="utf-8-sig"))
                 config = AppConfig(**{**asdict(AppConfig()), **data})
-                config.key_bindings = normalize_key_bindings(getattr(config, "key_bindings", None))
-                config.log_level = sanitize_log_level(config.log_level)
-                config.zoom_label_precision = max(0, min(3, int(getattr(config, "zoom_label_precision", 0))))
-                config.page_jump_value = max(1, int(getattr(config, "page_jump_value", 1)))
-                if config.sort_mode not in SORT_MODES:
-                    config.sort_mode = "name"
-                config.thumbnail_worker_count = max(1, min(MAX_THUMBNAIL_WORKER_COUNT, int(getattr(config, "thumbnail_worker_count", DEFAULT_THUMBNAIL_WORKER_COUNT))))
-                if not isinstance(config.recent_dirs, list):
-                    config.recent_dirs = []
-                config.recent_dirs = [str(item) for item in config.recent_dirs if isinstance(item, str) and item.strip()][:10]
-                if not isinstance(config.bookmarks, list):
-                    config.bookmarks = []
-                config.bookmarks = [str(item) for item in config.bookmarks if isinstance(item, str) and item.strip()]
-                if not isinstance(config.favorites, list):
-                    config.favorites = []
-                config.favorites = [str(item) for item in config.favorites if isinstance(item, str) and item.strip()]
-                config.slideshow_enabled = bool(getattr(config, "slideshow_enabled", False))
-                config.slideshow_interval_sec = max(1, min(30, int(getattr(config, "slideshow_interval_sec", 3))))
-                config.slideshow_pause_if_processing = bool(getattr(config, "slideshow_pause_if_processing", True))
-                config.spread_mode_enabled = bool(getattr(config, "spread_mode_enabled", False))
-                config.exif_auto_orient = bool(getattr(config, "exif_auto_orient", True))
-                if not isinstance(config.engine_presets, dict):
-                    config.engine_presets = {}
-                config.engine_retry_count = max(0, min(MAX_ENGINE_RETRY_COUNT, int(getattr(config, "engine_retry_count", DEFAULT_ENGINE_RETRY_COUNT))))
-                config.compare_diff_highlight = bool(getattr(config, "compare_diff_highlight", False))
-                config.compare_diff_threshold = max(0, min(255, int(getattr(config, "compare_diff_threshold", 24))))
-                config.max_safe_image_pixels = max(1_000_000, int(getattr(config, "max_safe_image_pixels", DEFAULT_MAX_SAFE_IMAGE_PIXELS)))
+                config = normalize_loaded_config_fields(config)
                 return config
         except Exception:
             pass
@@ -1053,6 +1033,7 @@ class GLImageView(ImageViewBaseWidget):
     resetRequested = Signal()
     actualSizeRequested = Signal()
     actionRequested = Signal(str)
+    emptyAreaClicked = Signal()
     pixmapPrefetchProgress = Signal(int, int, int, float)
 
     def __init__(self, parent=None) -> None:
@@ -1491,7 +1472,7 @@ class GLImageView(ImageViewBaseWidget):
             painter.drawText(
                 self.rect().adjusted(24, 24, -24, -24),
                 Qt.AlignCenter | Qt.TextWordWrap,
-                "画像またはフォルダ/アーカイブをドロップしてください\nDrop an image, folder, or archive",
+                "クリックまたはドロップで画像/フォルダ/アーカイブを開く\nClick or drop to open an image, folder, or archive",
             )
             painter.end()
             return
@@ -1591,6 +1572,9 @@ class GLImageView(ImageViewBaseWidget):
         action_id = self.matching_mouse_action(event, double=False)
         if action_id:
             self.actionRequested.emit(action_id)
+            return
+        if event.button() == Qt.LeftButton and self.current_display_image().isNull():
+            self.emptyAreaClicked.emit()
             return
         if event.button() == Qt.LeftButton:
             if event.modifiers() & Qt.ControlModifier:
@@ -1976,6 +1960,7 @@ class MainWindow(QMainWindow):
         self.viewer.resetRequested.connect(self.viewer.reset_display_state)
         self.viewer.actualSizeRequested.connect(self.viewer.zoom_to_actual_size)
         self.viewer.actionRequested.connect(self.perform_action)
+        self.viewer.emptyAreaClicked.connect(self.open_image_dialog)
         self.viewer.pixmapPrefetchProgress.connect(self.on_pixmap_prefetch_progress)
         self.viewer.installEventFilter(self)
         self.thumbnail_panel = self.build_thumbnail_panel()
@@ -2286,7 +2271,8 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.separator())
 
         layout.addWidget(QLabel("コマンドテンプレート"))
-        self.command_edit = QLineEdit(self.config_data.command_template)
+        self.command_edit = QLineEdit(self.active_command_template())
+        self.command_edit.textChanged.connect(self.on_command_template_text_changed)
         layout.addWidget(self.command_edit)
         exe_button = QPushButton("エンジンexeを選択")
         exe_button.clicked.connect(self.choose_engine_exe)
@@ -2552,7 +2538,7 @@ class MainWindow(QMainWindow):
         self.hide_cursor_fullscreen_check.setChecked(self.config_data.hide_cursor_in_fullscreen)
         self.hide_cursor_fullscreen_check.stateChanged.connect(self.on_general_settings_changed)
         layout.addWidget(self.hide_cursor_fullscreen_check)
-        self.status_label = QLabel("画像またはフォルダ/アーカイブをドロップしてください")
+        self.status_label = QLabel("クリックまたはドロップで画像/フォルダ/アーカイブを開く")
         self.status_label.setWordWrap(True)
         layout.addWidget(QLabel("状態"))
         layout.addWidget(self.status_label)
@@ -2814,109 +2800,156 @@ class MainWindow(QMainWindow):
         frame.moveCenter(available.center())
         self.move(frame.topLeft())
 
-    def persist_config(self, log: bool = False) -> None:
-        if getattr(self, "initializing", False):
-            return
-        self.save_active_command_template()
-        self.config_data.engine = self.current_engine()
-        self.config_data.command_template = self.config_data.realcugan_command_template
-        self.config_data.scale = int(self.scale_combo.currentText())
-        self.config_data.denoise = int(self.denoise_combo.currentText())
-        self.config_data.tile = self.tile_spin.value()
-        self.config_data.realesrgan_model = self.realesrgan_model_combo.currentText()
-        self.config_data.engine_retry_count = self.engine_retry_spin.value()
-        self.config_data.realcugan_prefetch_count = self.realcugan_prefetch_spin.value()
-        self.config_data.viewer_prefetch_count = self.viewer_prefetch_spin.value()
-        self.config_data.thumbnail_worker_count = self.thumbnail_worker_spin.value()
-        if not self.archive_mode_active():
-            self.config_data.save_upscaled_to_scale_folder = self.save_scale_check.isChecked()
-            self.config_data.use_scale_folder_cache = self.use_scale_cache_check.isChecked()
-        self.config_data.skip_realcugan_for_tall_images = self.skip_tall_check.isChecked()
-        self.config_data.skip_realcugan_height_threshold = self.skip_height_spin.value()
-        self.config_data.background_color = self.background_edit.text().strip() or DEFAULT_BACKGROUND_COLOR
-        self.config_data.cpu_resample_cache_enabled = self.cpu_resample_check.isChecked()
-        self.config_data.cpu_resample_algorithm = self.current_resample_algorithm()
-        if ENABLE_COMPARE_MODE:
-            compare_check = getattr(self, "compare_check", None)
-            compare_slider = getattr(self, "compare_slider", None)
-            compare_line_edit = getattr(self, "compare_line_edit", None)
-            compare_line_width_spin = getattr(self, "compare_line_width_spin", None)
-            compare_swap_check = getattr(self, "compare_swap_check", None)
-            compare_shift_check = getattr(self, "compare_shift_check", None)
-            compare_diff_highlight_check = getattr(self, "compare_diff_highlight_check", None)
-            compare_diff_threshold_spin = getattr(self, "compare_diff_threshold_spin", None)
-            self.config_data.compare_enabled = bool(compare_check.isChecked()) if compare_check is not None else False
-            self.config_data.compare_split = int(compare_slider.value()) if compare_slider is not None else 500
-            self.config_data.compare_line_color = (compare_line_edit.text().strip() if compare_line_edit is not None else "") or "#ffffff"
-            self.config_data.compare_line_width = int(compare_line_width_spin.value()) if compare_line_width_spin is not None else 2
-            self.config_data.compare_swap_sides = bool(compare_swap_check.isChecked()) if compare_swap_check is not None else False
-            self.config_data.compare_shift_drag_moves_boundary = bool(compare_shift_check.isChecked()) if compare_shift_check is not None else False
-            self.config_data.compare_diff_highlight = bool(compare_diff_highlight_check.isChecked()) if compare_diff_highlight_check is not None else False
-            self.config_data.compare_diff_threshold = int(compare_diff_threshold_spin.value()) if compare_diff_threshold_spin is not None else 24
-        else:
-            self.config_data.compare_enabled = False
-            self.config_data.compare_split = 500
-            self.config_data.compare_line_color = "#ffffff"
-            self.config_data.compare_line_width = 2
-            self.config_data.compare_swap_sides = False
-            self.config_data.compare_shift_drag_moves_boundary = False
-            self.config_data.compare_diff_highlight = False
-            self.config_data.compare_diff_threshold = 24
-        self.config_data.zoom_label_precision = self.zoom_precision_spin.value()
-        self.config_data.page_scroll_interval_ms = self.page_interval_spin.value()
-        self.config_data.page_jump_value = self.page_jump_spin.value()
-        self.config_data.wrap_page_navigation = self.wrap_page_check.isChecked()
-        self.config_data.preserve_view_on_page_navigation = self.preserve_view_check.isChecked()
-        self.config_data.spread_mode_enabled = self.spread_mode_check.isChecked()
-        self.config_data.exif_auto_orient = self.exif_auto_orient_check.isChecked()
-        self.config_data.invert_page_position_slider = self.invert_page_position_check.isChecked()
-        self.config_data.slideshow_enabled = self.slideshow_enabled_check.isChecked()
-        self.config_data.slideshow_interval_sec = self.slideshow_interval_spin.value()
-        self.config_data.slideshow_pause_if_processing = self.slideshow_pause_processing_check.isChecked()
-        self.config_data.horizontal_wheel_navigation = self.horizontal_wheel_check.isChecked()
-        self.config_data.horizontal_wheel_inverted = self.horizontal_wheel_invert_check.isChecked()
-        self.config_data.hide_cursor_in_fullscreen = self.hide_cursor_fullscreen_check.isChecked()
-        self.config_data.show_log_panel = self.show_log_check.isChecked()
-        self.config_data.log_level = self.log_level()
-        self.config_data.show_profile_panel = self.show_profile_check.isChecked()
-        if hasattr(self, "language_combo"):
-            self.config_data.ui_language = self.language_combo.currentData() or "ja"
-        self.config_data.thumbnail_enabled = self.thumbnail_enabled_check.isChecked()
-        self.config_data.thumbnail_pinned = self.thumbnail_pinned_check.isChecked()
-        self.config_data.thumbnail_height = self.clamped_thumbnail_height()
-        self.config_data.thumbnail_size = self.thumbnail_icon_size()
-        self.config_data.cleanup_temp_on_start = self.cleanup_check.isChecked()
-        self.config_data.settings_tab = ["realcugan", "general", "keyconfig"][max(0, min(2, self.tabs.currentIndex()))]
+    def _selected_settings_tab(self) -> str:
+        return SETTINGS_TABS[max(0, min(len(SETTINGS_TABS) - 1, self.tabs.currentIndex()))]
+
+    def _capture_engine_domain(self) -> EngineConfigDomain:
+        return EngineConfigDomain(
+            engine=self.current_engine(),
+            command_template=self.config_data.realcugan_command_template,
+            realcugan_command_template=self.config_data.realcugan_command_template,
+            realesrgan_command_template=self.config_data.realesrgan_command_template,
+            scale=int(self.scale_combo.currentText()),
+            denoise=int(self.denoise_combo.currentText()),
+            tile=self.tile_spin.value(),
+            engine_retry_count=self.engine_retry_spin.value(),
+            realesrgan_model=self.realesrgan_model_combo.currentText(),
+            realcugan_prefetch_count=self.realcugan_prefetch_spin.value(),
+            save_upscaled_to_scale_folder=(
+                self.config_data.save_upscaled_to_scale_folder if self.archive_mode_active() else self.save_scale_check.isChecked()
+            ),
+            use_scale_folder_cache=(
+                self.config_data.use_scale_folder_cache if self.archive_mode_active() else self.use_scale_cache_check.isChecked()
+            ),
+            skip_realcugan_for_tall_images=self.skip_tall_check.isChecked(),
+            skip_realcugan_height_threshold=self.skip_height_spin.value(),
+            engine_presets=dict(self.config_data.engine_presets),
+        )
+
+    def _capture_viewer_domain(self) -> ViewerConfigDomain:
+        return ViewerConfigDomain(
+            viewer_prefetch_count=self.viewer_prefetch_spin.value(),
+            thumbnail_worker_count=self.thumbnail_worker_spin.value(),
+            sort_mode=self.config_data.sort_mode,
+            recent_dirs=list(self.config_data.recent_dirs),
+            bookmarks=list(self.config_data.bookmarks),
+            favorites=list(self.config_data.favorites),
+            slideshow_enabled=self.slideshow_enabled_check.isChecked(),
+            slideshow_interval_sec=self.slideshow_interval_spin.value(),
+            slideshow_pause_if_processing=self.slideshow_pause_processing_check.isChecked(),
+            spread_mode_enabled=self.spread_mode_check.isChecked(),
+            exif_auto_orient=self.exif_auto_orient_check.isChecked(),
+            cpu_resample_cache_enabled=self.cpu_resample_check.isChecked(),
+            cpu_resample_algorithm=self.current_resample_algorithm(),
+            thumbnail_enabled=self.thumbnail_enabled_check.isChecked(),
+            thumbnail_pinned=self.thumbnail_pinned_check.isChecked(),
+            thumbnail_size=self.thumbnail_icon_size(),
+            thumbnail_height=self.clamped_thumbnail_height(),
+            horizontal_wheel_navigation=self.horizontal_wheel_check.isChecked(),
+            horizontal_wheel_inverted=self.horizontal_wheel_invert_check.isChecked(),
+            wrap_page_navigation=self.wrap_page_check.isChecked(),
+            preserve_view_on_page_navigation=self.preserve_view_check.isChecked(),
+            invert_page_position_slider=self.invert_page_position_check.isChecked(),
+            page_scroll_interval_ms=self.page_interval_spin.value(),
+            page_jump_value=self.page_jump_spin.value(),
+            max_safe_image_pixels=self.config_data.max_safe_image_pixels,
+        )
+
+    def _capture_compare_domain(self) -> CompareConfigDomain:
+        if not ENABLE_COMPARE_MODE:
+            return CompareConfigDomain()
+        compare_check = getattr(self, "compare_check", None)
+        compare_slider = getattr(self, "compare_slider", None)
+        compare_line_edit = getattr(self, "compare_line_edit", None)
+        compare_line_width_spin = getattr(self, "compare_line_width_spin", None)
+        compare_swap_check = getattr(self, "compare_swap_check", None)
+        compare_shift_check = getattr(self, "compare_shift_check", None)
+        compare_diff_highlight_check = getattr(self, "compare_diff_highlight_check", None)
+        compare_diff_threshold_spin = getattr(self, "compare_diff_threshold_spin", None)
+        return CompareConfigDomain(
+            compare_enabled=bool(compare_check.isChecked()) if compare_check is not None else False,
+            compare_split=int(compare_slider.value()) if compare_slider is not None else 500,
+            compare_line_color=(compare_line_edit.text().strip() if compare_line_edit is not None else "") or "#ffffff",
+            compare_line_width=int(compare_line_width_spin.value()) if compare_line_width_spin is not None else 2,
+            compare_swap_sides=bool(compare_swap_check.isChecked()) if compare_swap_check is not None else False,
+            compare_shift_drag_moves_boundary=bool(compare_shift_check.isChecked()) if compare_shift_check is not None else False,
+            compare_diff_highlight=bool(compare_diff_highlight_check.isChecked()) if compare_diff_highlight_check is not None else False,
+            compare_diff_threshold=int(compare_diff_threshold_spin.value()) if compare_diff_threshold_spin is not None else 24,
+        )
+
+    def _capture_ui_domain(self) -> UiConfigDomain:
+        window_rect = self.config_data.window_rect
+        window_maximized = self.config_data.window_maximized
         if not self.is_app_fullscreen():
             rect = self.normalGeometry() if self.isMaximized() else self.geometry()
             if rect.isValid():
-                self.config_data.window_rect = [rect.x(), rect.y(), rect.width(), rect.height()]
-                self.config_data.window_maximized = self.isMaximized()
-        self.config_data.window_geometry = ""
+                window_rect = [rect.x(), rect.y(), rect.width(), rect.height()]
+                window_maximized = self.isMaximized()
+
         side_panel = getattr(self, "side_panel", None)
         pin_button = getattr(self, "pin_button", None)
         detach_check = getattr(self, "side_panel_detach_check", None)
         position_combo = getattr(self, "side_panel_position_combo", None)
-        self.config_data.side_panel_visible = (
+        side_panel_visible = (
             self.side_panel_visible_before_fullscreen
             if self.is_app_fullscreen()
             else side_panel.isVisible() if side_panel is not None else self.config_data.side_panel_visible
         )
-        self.config_data.side_panel_pinned = pin_button.isChecked() if pin_button is not None else self.config_data.side_panel_pinned
-        self.config_data.side_panel_detached = detach_check.isChecked() if detach_check is not None else self.config_data.side_panel_detached
+        side_panel_pinned = pin_button.isChecked() if pin_button is not None else self.config_data.side_panel_pinned
+        side_panel_detached = detach_check.isChecked() if detach_check is not None else self.config_data.side_panel_detached
         position = position_combo.currentData() if position_combo is not None else self.config_data.side_panel_position
-        self.config_data.side_panel_position = position if position in SIDE_PANEL_POSITIONS else "right"
-        splitter = getattr(self, "splitter", None)
+        side_panel_position = position if position in SIDE_PANEL_POSITIONS else "right"
+        side_panel_window_rect = self.config_data.side_panel_window_rect
+        side_panel_width = self.config_data.side_panel_width
         if side_panel is not None:
-            self.config_data.side_panel_width = int(self.side_panel_width)
-            if self.config_data.side_panel_detached and side_panel.isVisible():
+            side_panel_width = int(self.side_panel_width)
+            if side_panel_detached and side_panel.isVisible():
                 rect = side_panel.geometry()
-                self.config_data.side_panel_window_rect = [rect.x(), rect.y(), rect.width(), rect.height()]
+                side_panel_window_rect = [rect.x(), rect.y(), rect.width(), rect.height()]
+
+        splitter_sizes = self.config_data.splitter_sizes
+        splitter = getattr(self, "splitter", None)
         if splitter is not None and not self.side_panel_overlay:
             sizes = self.splitter.sizes()
             side_index = self.splitter_side_panel_index() if hasattr(self, "splitter_side_panel_index") else 1
             if len(sizes) >= 2 and sizes[side_index] >= 80:
-                self.config_data.splitter_sizes = sizes
+                splitter_sizes = sizes
+
+        return UiConfigDomain(
+            background_color=self.background_edit.text().strip() or DEFAULT_BACKGROUND_COLOR,
+            zoom_label_precision=self.zoom_precision_spin.value(),
+            hide_cursor_in_fullscreen=self.hide_cursor_fullscreen_check.isChecked(),
+            show_log_panel=self.show_log_check.isChecked(),
+            log_level=self.log_level(),
+            show_profile_panel=self.show_profile_check.isChecked(),
+            ui_language=(self.language_combo.currentData() or "ja") if hasattr(self, "language_combo") else self.config_data.ui_language,
+            arrow_right_next=self.config_data.arrow_right_next,
+            key_bindings=normalize_key_bindings(self.config_data.key_bindings),
+            cleanup_temp_on_start=self.cleanup_check.isChecked(),
+            settings_tab=self._selected_settings_tab(),
+            window_rect=window_rect,
+            window_maximized=window_maximized,
+            window_geometry="",
+            side_panel_visible=side_panel_visible,
+            side_panel_pinned=side_panel_pinned,
+            side_panel_width=side_panel_width,
+            side_panel_position=side_panel_position,
+            side_panel_detached=side_panel_detached,
+            side_panel_window_rect=side_panel_window_rect,
+            splitter_sizes=splitter_sizes,
+            last_dir=self.config_data.last_dir,
+        )
+
+    def persist_config(self, log: bool = False) -> None:
+        if getattr(self, "initializing", False):
+            return
+        self.save_active_command_template()
+        self.config_data.apply_domains(
+            engine=self._capture_engine_domain(),
+            viewer=self._capture_viewer_domain(),
+            compare=self._capture_compare_domain(),
+            ui=self._capture_ui_domain(),
+        )
         save_config(self.config_data)
         if log:
             self.append_log(f"Saved settings: {CONFIG_PATH}")
@@ -3300,6 +3333,13 @@ class MainWindow(QMainWindow):
             self.config_data.realesrgan_command_template = text
         else:
             self.config_data.realcugan_command_template = text
+
+    def on_command_template_text_changed(self, text: str) -> None:
+        template = text.strip() or self.default_template_for_engine(self.current_engine())
+        if self.current_engine() == ENGINE_REALESRGAN:
+            self.config_data.realesrgan_command_template = template
+        else:
+            self.config_data.realcugan_command_template = template
 
     def apply_engine_ui(self) -> None:
         if not hasattr(self, "engine_combo"):
@@ -4839,7 +4879,7 @@ class MainWindow(QMainWindow):
         self.persist_config()
 
     def on_settings_tab_changed(self, index: int) -> None:
-        self.config_data.settings_tab = ["realcugan", "general", "keyconfig"][max(0, min(2, index))]
+        self.config_data.settings_tab = SETTINGS_TABS[max(0, min(len(SETTINGS_TABS) - 1, index))]
         self.persist_config()
 
     def on_engine_changed(self, *_args) -> None:
@@ -5303,7 +5343,17 @@ class MainWindow(QMainWindow):
             "tile": self.tile_spin.value(),
             "model": self.realesrgan_model_combo.currentText(),
         }
-        command = self.active_command_template().format(**values)
+        try:
+            command = format_command_template(self.active_command_template(), values)
+        except ValueError as exc:
+            return {
+                "path": source,
+                "code": 1,
+                "output": f"Invalid command template: {exc}",
+                "image": QImage(),
+                "elapsed_ms": 0.0,
+                "attempts": 1,
+            }
         try:
             command_args = split_command_line(command)
         except ValueError as exc:
@@ -5395,7 +5445,10 @@ class MainWindow(QMainWindow):
             "tile": self.tile_spin.value(),
             "model": self.realesrgan_model_combo.currentText(),
         }
-        return self.active_command_template().format(**values)
+        try:
+            return format_command_template(self.active_command_template(), values)
+        except ValueError as exc:
+            return f"<invalid template: {exc}>"
 
     def on_process_done(self, result: dict) -> None:
         path: Path = result["path"]

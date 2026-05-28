@@ -6,13 +6,43 @@ import shutil
 import subprocess
 import zipfile
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterable
 
 from exceptions import ArchiveExtractionError, ArchiveToolNotFoundError, UnsupportedArchiveFormatError
 from helpers import archive_display_name, natural_sort_key, safe_archive_member_parts
 
 ArchiveResult = tuple[list[Path], dict[Path, str]]
 SEVEN_ZIP_COMMAND_NAMES = ("7z", "7za", "7zr")
+
+
+def find_unsafe_archive_members(member_names: Iterable[str]) -> list[str]:
+    return [name for name in member_names if safe_archive_member_parts(name) is None]
+
+
+def list_7z_members(tool: Path, archive_path: Path) -> list[str]:
+    completed = subprocess.run(
+        [str(tool), "l", "-slt", str(archive_path)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise ArchiveExtractionError(completed.stdout.strip())
+    members: list[str] = []
+    for line in completed.stdout.splitlines():
+        if not line.startswith("Path = "):
+            continue
+        value = line[7:].strip()
+        if not value:
+            continue
+        if value.endswith("/") or value.endswith("\\"):
+            continue
+        members.append(value)
+    return members
 
 
 def archive_member_output_path(temp_dir: Path, member_name: str) -> Path | None:
@@ -89,6 +119,9 @@ def extract_with_7z_command(archive_path: Path, temp_dir: Path, is_image: Callab
     tool = find_7z()
     if tool is None:
         raise ArchiveToolNotFoundError("この形式を開くには py7zr/rarfile または 7z/7za/7zr が必要です。")
+    unsafe = find_unsafe_archive_members(list_7z_members(tool, archive_path))
+    if unsafe:
+        raise ArchiveExtractionError(f"Archive contains unsafe member paths: {unsafe[0]}")
     completed = subprocess.run(
         [str(tool), "x", "-y", f"-o{temp_dir}", str(archive_path)],
         stdout=subprocess.PIPE,
@@ -117,6 +150,9 @@ def extract_archive_images(
     if suffix in {".7z", ".cb7"}:
         if py7zr_module is not None:
             with py7zr_module.SevenZipFile(archive_path, mode="r") as archive:
+                unsafe = find_unsafe_archive_members(archive.getnames())
+                if unsafe:
+                    raise ArchiveExtractionError(f"Archive contains unsafe member paths: {unsafe[0]}")
                 archive.extractall(path=temp_dir)
             return collect_archive_outputs(temp_dir, is_image)
         return extract_with_7z_command(archive_path, temp_dir, is_image)
