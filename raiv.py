@@ -5290,10 +5290,10 @@ class MainWindow(QMainWindow):
         return not image.isNull() and image.height() >= height_threshold
 
     def run_upscale_engine(self, source: Path) -> dict:
-        output_path, temporary_output = self.prepare_output_path(source)
+        output_path, command_output_path, persist_output = self.prepare_output_path(source)
         values = {
             "input": str(source),
-            "output": str(output_path),
+            "output": str(command_output_path),
             "scale": self.effective_scale(),
             "denoise": self.denoise_combo.currentText(),
             "tile": self.tile_spin.value(),
@@ -5339,17 +5339,21 @@ class MainWindow(QMainWindow):
                  )
             except Exception as exc:
                 outputs.append(f"Attempt {attempt}/{attempts}: {exc}")
-                if temporary_output and output_path.exists():
-                    output_path.unlink(missing_ok=True)
+                if command_output_path.exists():
+                    command_output_path.unlink(missing_ok=True)
                 continue
             outputs.append(f"Attempt {attempt}/{attempts} exit={completed.returncode}")
             if completed.stdout.strip():
                 outputs.append(completed.stdout.strip())
             if completed.returncode == 0:
-                image = QImage(str(output_path)) if output_path.exists() else QImage()
+                image = QImage(str(command_output_path)) if command_output_path.exists() else QImage()
                 if not image.isNull():
-                    if temporary_output and output_path.exists():
-                        output_path.unlink(missing_ok=True)
+                    if persist_output:
+                        output_path.parent.mkdir(parents=True, exist_ok=True)
+                        command_output_path.replace(output_path)
+                    else:
+                        if command_output_path.exists():
+                            command_output_path.unlink(missing_ok=True)
                     return {
                         "path": source,
                         "code": 0,
@@ -5358,8 +5362,8 @@ class MainWindow(QMainWindow):
                         "elapsed_ms": (time.perf_counter() - started) * 1000,
                         "attempts": attempt,
                     }
-            if temporary_output and output_path.exists():
-                output_path.unlink(missing_ok=True)
+            if command_output_path.exists():
+                command_output_path.unlink(missing_ok=True)
         return {
             "path": source,
             "code": 1,
@@ -5427,13 +5431,16 @@ class MainWindow(QMainWindow):
         path = self.cache_output_path(source, create_dir=False)
         return path if path.exists() else None
 
-    def prepare_output_path(self, source: Path) -> tuple[Path, bool]:
+    def prepare_output_path(self, source: Path) -> tuple[Path, Path, bool]:
         if self.save_scale_check.isChecked() and not self.archive_mode_active():
-            return self.cache_output_path(source, create_dir=True), False
+            final_output = self.cache_output_path(source, create_dir=True)
+            fd, text_path = tempfile.mkstemp(prefix=TEMP_OUTPUT_PREFIX, suffix=".png", dir=self.process_temp_dir)
+            os.close(fd)
+            return final_output, Path(text_path), True
         fd, text_path = tempfile.mkstemp(prefix=TEMP_OUTPUT_PREFIX, suffix=".png", dir=self.process_temp_dir)
         os.close(fd)
-        Path(text_path).unlink(missing_ok=True)
-        return Path(text_path), True
+        temp_output = Path(text_path)
+        return temp_output, temp_output, False
 
     def cache_output_path(self, source: Path, create_dir: bool) -> Path:
         engine_model = self.cache_model_name()
