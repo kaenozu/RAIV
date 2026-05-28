@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import subprocess
@@ -123,7 +124,8 @@ def extract_archive_images(
         if rarfile_module is not None:
             try:
                 return extract_rar_images(archive_path, temp_dir, is_image, rarfile_module)
-            except Exception:
+            except Exception as exc:
+                logging.getLogger(__name__).warning("RAR extraction failed for %s, falling back to 7z: %s", archive_path, exc)
                 return extract_with_7z_command(archive_path, temp_dir, is_image)
         return extract_with_7z_command(archive_path, temp_dir, is_image)
     raise UnsupportedArchiveFormatError(f"対応していない形式です: {suffix}")

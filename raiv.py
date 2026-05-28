@@ -62,7 +62,7 @@ from archive_utils import (
     find_7z as find_7z_command,
 )
 from exceptions import ArchiveError
-from helpers import archive_display_name, cleanup_stale_temp_entries, sort_images
+from helpers import archive_display_name, cleanup_stale_temp_entries, sort_images, split_command_line
 from logging_utils import (
     LOG_LEVEL_ERROR,
     LOG_LEVEL_INFO,
@@ -5053,16 +5053,36 @@ class MainWindow(QMainWindow):
             "model": self.realesrgan_model_combo.currentText(),
         }
         command = self.active_command_template().format(**values)
+        try:
+            command_args = split_command_line(command)
+        except ValueError as exc:
+            return {
+                "path": source,
+                "code": 1,
+                "output": f"Invalid command template: {exc}",
+                "image": QImage(),
+                "elapsed_ms": 0.0,
+                "attempts": 1,
+            }
+        if not command_args:
+            return {
+                "path": source,
+                "code": 1,
+                "output": "Invalid command template: empty command",
+                "image": QImage(),
+                "elapsed_ms": 0.0,
+                "attempts": 1,
+            }
         attempts = max(1, int(self.config_data.engine_retry_count) + 1)
         started = time.perf_counter()
         outputs: list[str] = []
         for attempt in range(1, attempts + 1):
             try:
                  completed = subprocess.run(
-                     command,
+                     command_args,
                      stdout=subprocess.PIPE,
                      stderr=subprocess.STDOUT,
-                     shell=True,
+                     shell=False,
                      cwd=str(self.command_working_dir(command)),
                      text=True,
                      encoding="utf-8",
@@ -5072,24 +5092,25 @@ class MainWindow(QMainWindow):
                  )
             except Exception as exc:
                 outputs.append(f"Attempt {attempt}/{attempts}: {exc}")
-                completed = None
-            else:
-                outputs.append(f"Attempt {attempt}/{attempts} exit={completed.returncode}")
-                if completed.stdout.strip():
-                    outputs.append(completed.stdout.strip())
-                if completed.returncode == 0:
-                    image = QImage(str(output_path)) if output_path.exists() else QImage()
-                    if not image.isNull():
-                        if temporary_output and output_path.exists():
-                            output_path.unlink(missing_ok=True)
-                        return {
-                            "path": source,
-                            "code": 0,
-                            "output": "\n".join(outputs),
-                            "image": image,
-                            "elapsed_ms": (time.perf_counter() - started) * 1000,
-                            "attempts": attempt,
-                        }
+                if temporary_output and output_path.exists():
+                    output_path.unlink(missing_ok=True)
+                continue
+            outputs.append(f"Attempt {attempt}/{attempts} exit={completed.returncode}")
+            if completed.stdout.strip():
+                outputs.append(completed.stdout.strip())
+            if completed.returncode == 0:
+                image = QImage(str(output_path)) if output_path.exists() else QImage()
+                if not image.isNull():
+                    if temporary_output and output_path.exists():
+                        output_path.unlink(missing_ok=True)
+                    return {
+                        "path": source,
+                        "code": 0,
+                        "output": "\n".join(outputs),
+                        "image": image,
+                        "elapsed_ms": (time.perf_counter() - started) * 1000,
+                        "attempts": attempt,
+                    }
             if temporary_output and output_path.exists():
                 output_path.unlink(missing_ok=True)
         return {

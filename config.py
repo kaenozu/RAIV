@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import ctypes
 import json
+import logging
 import os
 import shutil
 import sys
@@ -423,12 +424,16 @@ def load_config() -> AppConfig:
         if "compare_split" in data and 0 <= int(data.get("compare_split", 500)) <= 100:
             config.compare_split = int(data["compare_split"]) * 10
         return config
-    except Exception:
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Failed to load config from %s: %s", CONFIG_PATH, exc)
         return AppConfig()
 
 
 def save_config(config: AppConfig) -> None:
-    CONFIG_PATH.write_text(json.dumps(asdict(config), ensure_ascii=False, indent=2), encoding="utf-8")
+    try:
+        CONFIG_PATH.write_text(json.dumps(asdict(config), ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError as exc:
+        logging.getLogger(__name__).error("Failed to save config to %s: %s", CONFIG_PATH, exc)
 
 
 def modifier_value(modifiers) -> int:
