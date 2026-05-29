@@ -27,6 +27,8 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QKeySequence
 
+from logging_utils import sanitize_log_level
+
 try:
     from PySide6.QtCore import Signal as QtSignal
 except ImportError:
@@ -62,6 +64,14 @@ ENGINE_LABELS = {
     ENGINE_REALESRGAN: "Real-ESRGAN",
 }
 REALESRGAN_MODELS = ["realesr-animevideov3", "realesrgan-x4plus", "realesrgan-x4plus-anime"]
+MIN_SIDE_PANEL_WIDTH = 240
+MAX_ENGINE_RETRY_COUNT = 5
+MAX_THUMBNAIL_WORKER_COUNT = 4
+MAX_SLIDESHOW_INTERVAL_SEC = 30
+MAX_COMPARE_DIFF_THRESHOLD = 255
+MAX_ZOOM_LABEL_PRECISION = 3
+MIN_SAFE_IMAGE_PIXELS = 1_000_000
+MAX_RECENT_DIRS = 10
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff", ".avif", ".heic", ".heif"}
 ARCHIVE_EXTENSIONS = {".zip", ".cbz", ".rar", ".cbr", ".7z", ".cb7"}
 TEMP_ARCHIVE_PREFIX = "realcugan_qt_archive_"
@@ -415,6 +425,40 @@ def normalize_key_bindings(value: object) -> dict[str, dict[str, dict | None]]:
     return normalized
 
 
+def _is_real_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _clamp_int(value: object, default: int, minimum: int | None = None, maximum: int | None = None) -> int:
+    if not _is_real_int(value):
+        return default
+    normalized = value
+    if minimum is not None and normalized < minimum:
+        normalized = minimum
+    if maximum is not None and normalized > maximum:
+        normalized = maximum
+    return normalized
+
+
+def _normalize_str_list(value: object, limit: int | None = None) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    normalized = [item for item in value if isinstance(item, str) and item.strip()]
+    if limit is not None:
+        return normalized[:limit]
+    return normalized
+
+
+def _normalize_engine_presets(value: object) -> dict[str, dict[str, object]]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        name: preset
+        for name, preset in value.items()
+        if isinstance(name, str) and name.strip() and isinstance(preset, dict)
+    }
+
+
 def load_config() -> AppConfig:
     if not CONFIG_PATH.exists():
         return AppConfig()
@@ -441,13 +485,28 @@ def load_config() -> AppConfig:
             config.side_panel_position = "right"
         if not isinstance(config.side_panel_detached, bool):
             config.side_panel_detached = False
-        if not isinstance(config.side_panel_width, int):
-            config.side_panel_width = 460
-        config.side_panel_width = max(240, config.side_panel_width)
+        config.side_panel_width = _clamp_int(config.side_panel_width, 460, MIN_SIDE_PANEL_WIDTH)
         if not isinstance(config.side_panel_window_rect, list) or len(config.side_panel_window_rect) != 4:
             config.side_panel_window_rect = None
-        elif not all(isinstance(value, int) for value in config.side_panel_window_rect):
+        elif not all(_is_real_int(value) for value in config.side_panel_window_rect):
             config.side_panel_window_rect = None
+        config.thumbnail_worker_count = _clamp_int(
+            config.thumbnail_worker_count,
+            1,
+            1,
+            MAX_THUMBNAIL_WORKER_COUNT,
+        )
+        config.recent_dirs = _normalize_str_list(config.recent_dirs, MAX_RECENT_DIRS)
+        config.bookmarks = _normalize_str_list(config.bookmarks)
+        config.favorites = _normalize_str_list(config.favorites)
+        config.slideshow_interval_sec = _clamp_int(config.slideshow_interval_sec, 3, 1, MAX_SLIDESHOW_INTERVAL_SEC)
+        config.engine_presets = _normalize_engine_presets(config.engine_presets)
+        config.engine_retry_count = _clamp_int(config.engine_retry_count, 1, 0, MAX_ENGINE_RETRY_COUNT)
+        config.compare_diff_threshold = _clamp_int(config.compare_diff_threshold, 24, 0, MAX_COMPARE_DIFF_THRESHOLD)
+        config.zoom_label_precision = _clamp_int(config.zoom_label_precision, 0, 0, MAX_ZOOM_LABEL_PRECISION)
+        config.log_level = sanitize_log_level(config.log_level)
+        config.page_jump_value = _clamp_int(config.page_jump_value, 1, 1)
+        config.max_safe_image_pixels = _clamp_int(config.max_safe_image_pixels, 120_000_000, MIN_SAFE_IMAGE_PIXELS)
         config.key_bindings = normalize_key_bindings(getattr(config, "key_bindings", None))
         if BUNDLED_REALCUGAN_EXE.exists() and not command_executable_exists(config.realcugan_command_template):
             config.realcugan_command_template = DEFAULT_REALCUGAN_TEMPLATE
