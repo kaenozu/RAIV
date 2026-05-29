@@ -77,7 +77,7 @@ from ui_text import translate_binding_text, translate_state_text, translate_ui_t
 
 try:
     from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QSize, Qt, QTimer, Signal
-    from PySide6.QtGui import QColor, QCursor, QIcon, QImage, QImageReader, QKeySequence, QPainter, QPen, QPixmap, QTransform
+    from PySide6.QtGui import QColor, QCloseEvent, QCursor, QDragLeaveEvent, QIcon, QImage, QImageReader, QKeyEvent, QKeySequence, QMouseEvent, QPaintEvent, QPainter, QPen, QPixmap, QResizeEvent, QTransform
     from PySide6.QtWidgets import (
         QAbstractItemView,
         QApplication,
@@ -783,8 +783,9 @@ def postprocess_loaded_config(config: AppConfig, data: dict[str, object]) -> App
         config.realcugan_command_template = DEFAULT_REALCUGAN_TEMPLATE
     if BUNDLED_REALESRGAN_EXE.exists() and not command_executable_exists(config.realesrgan_command_template):
         config.realesrgan_command_template = DEFAULT_REALESRGAN_TEMPLATE
-    if "compare_split" in data and 0 <= int(data.get("compare_split", 500)) <= 100:
-        config.compare_split = int(data["compare_split"]) * 10
+    compare_split_value = data.get("compare_split", 500)
+    if isinstance(compare_split_value, int) and not isinstance(compare_split_value, bool) and 0 <= compare_split_value <= 100:
+        config.compare_split = compare_split_value * 10
     return config
 
 
@@ -828,6 +829,34 @@ def save_config(config: AppConfig) -> None:
 
 def modifier_value(modifiers) -> int:
     return int(modifiers.value if hasattr(modifiers, "value") else modifiers) & MODIFIER_MASK
+
+
+def coerce_int(value: object, default: int) -> int:
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return default
+    return default
+
+
+def coerce_float(value: object, default: float) -> float:
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return default
+    return default
 
 
 def binding_modifiers_text(modifiers: int) -> list[str]:
@@ -991,7 +1020,7 @@ class KeyBindingDialog(QDialog):
         self.capturing = False
         self.capture_button.setText(self.dialog_text("ここをクリック後、設定するキーを押下" if self.kind == "keyboard" else "ここをクリック後、設定するマウスボタンを押下"))
 
-    def keyPressEvent(self, event: QEvent) -> None:
+    def keyPressEvent(self, event: QKeyEvent) -> None:
         if not self.capturing:
             super().keyPressEvent(event)
             return
@@ -1003,7 +1032,7 @@ class KeyBindingDialog(QDialog):
         self.stop_capture()
         self.update_preview()
 
-    def mousePressEvent(self, event: QEvent) -> None:
+    def mousePressEvent(self, event: QMouseEvent) -> None:
         if not self.capturing or self.kind != "mouse":
             super().mousePressEvent(event)
             return
@@ -1395,7 +1424,7 @@ class GLImageView(ImageViewBaseWidget):
         self.fit_image_size = (image.width(), image.height())
         self.zoomChanged.emit(self.current_scale())
 
-    def resizeEvent(self, event: QEvent) -> None:
+    def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
         if ImageViewBaseWidget is QWidget:
             self.resizeGL(self.width(), self.height())
@@ -1520,7 +1549,7 @@ class GLImageView(ImageViewBaseWidget):
                 self.draw_image(painter, target, image, pixmap)
         painter.end()
 
-    def paintEvent(self, event: QEvent) -> None:
+    def paintEvent(self, event: QPaintEvent) -> None:
         if ImageViewBaseWidget is QWidget:
             self.paintGL()
             return
@@ -1616,13 +1645,13 @@ class GLImageView(ImageViewBaseWidget):
         else:
             self.unsetCursor()
 
-    def mouseReleaseEvent(self, event: QEvent) -> None:
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.LeftButton:
             self.zoom_drag_start = None
             self.pan_start = None
         super().mouseReleaseEvent(event)
 
-    def mouseDoubleClickEvent(self, event: QEvent) -> None:
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
         action_id = self.matching_mouse_action(event, double=True)
         if action_id:
             self.actionRequested.emit(action_id)
@@ -2366,7 +2395,7 @@ class MainWindow(QMainWindow):
 
         resample_form = QFormLayout()
         self.cpu_resample_combo = QComboBox()
-        self.cpu_resample_combo.addItems(RESAMPLE_ALGORITHMS.values())
+        self.cpu_resample_combo.addItems(list(RESAMPLE_ALGORITHMS.values()))
         self.cpu_resample_combo.setCurrentText(RESAMPLE_ALGORITHMS.get(self.config_data.cpu_resample_algorithm, RESAMPLE_ALGORITHMS["lanczos3"]))
         self.cpu_resample_combo.currentTextChanged.connect(self.on_resample_settings_changed)
         self.cpu_resample_combo.setEnabled(self.cpu_resample_check.isChecked())
@@ -4020,7 +4049,7 @@ class MainWindow(QMainWindow):
         if action is not None:
             action()
 
-    def keyPressEvent(self, event: QEvent) -> None:
+    def keyPressEvent(self, event: QKeyEvent) -> None:
         if event.key() == Qt.Key_Space:
             self.queue_page_steps(1)
         elif event.key() == Qt.Key_Backspace:
@@ -4061,7 +4090,7 @@ class MainWindow(QMainWindow):
             self.viewer_host.setStyleSheet("border: 2px solid #2f80ff;")
             self.status_label.setText("ドロップして開く" if self.ui_language() != "en" else "Drop to open")
 
-    def dragLeaveEvent(self, event: QEvent) -> None:
+    def dragLeaveEvent(self, event: QDragLeaveEvent) -> None:
         self.viewer_host.setStyleSheet("")
         super().dragLeaveEvent(event)
 
@@ -4628,7 +4657,7 @@ class MainWindow(QMainWindow):
                 self.side_panel.raise_()
         self.persist_config()
 
-    def resizeEvent(self, event: QEvent) -> None:
+    def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
         self.layout_viewer_host()
         if self.side_panel_overlay:
@@ -5080,7 +5109,7 @@ class MainWindow(QMainWindow):
         self.engine_combo.setCurrentText(ENGINE_LABELS[engine])
         self.scale_combo.setCurrentText(str(preset.get("scale", 2)))
         self.denoise_combo.setCurrentText(str(preset.get("denoise", 0)))
-        self.tile_spin.setValue(int(preset.get("tile", 0)))
+        self.tile_spin.setValue(coerce_int(preset.get("tile", 0), 0))
         model = str(preset.get("model", self.realesrgan_model_combo.currentText()))
         model_index = self.realesrgan_model_combo.findText(model)
         if model_index >= 0:
@@ -5102,7 +5131,7 @@ class MainWindow(QMainWindow):
         model = self.realesrgan_model_combo.currentText()
         preset = recommendations.get(model, recommendations["realesr-animevideov3"])
         self.scale_combo.setCurrentText(str(preset["scale"]))
-        self.tile_spin.setValue(int(preset["tile"]))
+        self.tile_spin.setValue(coerce_int(preset["tile"], 0))
         self.on_processing_settings_changed()
 
     def cancel_processing_jobs(self) -> None:
@@ -5730,7 +5759,7 @@ class MainWindow(QMainWindow):
             TEMP_OUTPUT_PREFIX,
         )
 
-    def closeEvent(self, event: QEvent) -> None:
+    def closeEvent(self, event: QCloseEvent) -> None:
         self.closing = True
         self._show_fullscreen_cursor()
         self.persist_config()
@@ -5781,12 +5810,12 @@ class MainWindow(QMainWindow):
         snapshot = self.view_snapshots.get("default")
         if not snapshot:
             return
-        self.viewer.display_rotation = int(snapshot.get("rotation", 0))
+        self.viewer.display_rotation = coerce_int(snapshot.get("rotation", 0), 0)
         self.viewer.display_flip_horizontal = bool(snapshot.get("flip_h", False))
         self.viewer.display_flip_vertical = bool(snapshot.get("flip_v", False))
         self.viewer.rebuild_display_images()
-        self.viewer.zoom = self.viewer.clamp_zoom_factor(float(snapshot.get("zoom", 1.0)))
-        self.viewer.offset = QPoint(int(snapshot.get("offset_x", 0)), int(snapshot.get("offset_y", 0)))
+        self.viewer.zoom = self.viewer.clamp_zoom_factor(coerce_float(snapshot.get("zoom", 1.0), 1.0))
+        self.viewer.offset = QPoint(coerce_int(snapshot.get("offset_x", 0), 0), coerce_int(snapshot.get("offset_y", 0), 0))
         self.viewer.update()
         self.append_log_if_visible("Restored view snapshot")
 

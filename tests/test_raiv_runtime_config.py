@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from PySide6.QtCore import QRect
 
@@ -65,8 +66,9 @@ def test_side_panel_window_rect_is_clamped_to_available_geometry() -> None:
         def _available_virtual_geometry(self) -> QRect:
             return QRect(0, 0, 1920, 1080)
 
+    dummy_window: Any = DummyWindow()
     restored = raiv.MainWindow._restore_side_panel_window_rect(
-        DummyWindow(),
+        dummy_window,
         [-100, -50, 5000, 4000],
     )
 
