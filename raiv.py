@@ -252,7 +252,7 @@ ACTION_DEFS = [
     ("first_page", "最初ページ飛ばし"),
     ("toggle_fullscreen", "全画面表示/解除"),
     ("toggle_thumbnail_panel", "サムネイル固定/自動表示"),
-    ("toggle_side_panel", "右ペイン固定/自動表示"),
+    ("toggle_side_panel", "設定パネル固定/自動表示"),
     ("actual_size", "等倍表示"),
     ("fit_view", "画面フィット表示"),
     ("rotate_right", "画像右回転"),
@@ -769,28 +769,32 @@ def normalize_loaded_config_fields(config: AppConfig) -> AppConfig:
     return config
 
 
+def postprocess_loaded_config(config: AppConfig, data: dict[str, object]) -> AppConfig:
+    if config.command_template == LEGACY_REALCUGAN_TEMPLATE and BUNDLED_REALCUGAN_EXE.exists():
+        config.command_template = DEFAULT_REALCUGAN_TEMPLATE
+    if config.realcugan_command_template in {LEGACY_REALCUGAN_TEMPLATE, ""} and BUNDLED_REALCUGAN_EXE.exists():
+        config.realcugan_command_template = DEFAULT_REALCUGAN_TEMPLATE
+    if config.realesrgan_command_template in {LEGACY_REALESRGAN_TEMPLATE, ""} and BUNDLED_REALESRGAN_EXE.exists():
+        config.realesrgan_command_template = DEFAULT_REALESRGAN_TEMPLATE
+    if "realcugan_command_template" not in data:
+        config.realcugan_command_template = config.command_template or DEFAULT_REALCUGAN_TEMPLATE
+    config = normalize_loaded_config_fields(config)
+    if BUNDLED_REALCUGAN_EXE.exists() and not command_executable_exists(config.realcugan_command_template):
+        config.realcugan_command_template = DEFAULT_REALCUGAN_TEMPLATE
+    if BUNDLED_REALESRGAN_EXE.exists() and not command_executable_exists(config.realesrgan_command_template):
+        config.realesrgan_command_template = DEFAULT_REALESRGAN_TEMPLATE
+    if "compare_split" in data and 0 <= int(data.get("compare_split", 500)) <= 100:
+        config.compare_split = int(data["compare_split"]) * 10
+    return config
+
+
 def load_config() -> AppConfig:
     if not CONFIG_PATH.exists():
         return AppConfig()
     try:
         data = json.loads(CONFIG_PATH.read_text(encoding="utf-8-sig"))
         config = AppConfig(**{**asdict(AppConfig()), **data})
-        if config.command_template == LEGACY_REALCUGAN_TEMPLATE and BUNDLED_REALCUGAN_EXE.exists():
-            config.command_template = DEFAULT_REALCUGAN_TEMPLATE
-        if config.realcugan_command_template in {LEGACY_REALCUGAN_TEMPLATE, ""} and BUNDLED_REALCUGAN_EXE.exists():
-            config.realcugan_command_template = DEFAULT_REALCUGAN_TEMPLATE
-        if config.realesrgan_command_template in {LEGACY_REALESRGAN_TEMPLATE, ""} and BUNDLED_REALESRGAN_EXE.exists():
-            config.realesrgan_command_template = DEFAULT_REALESRGAN_TEMPLATE
-        if "realcugan_command_template" not in data:
-            config.realcugan_command_template = config.command_template or DEFAULT_REALCUGAN_TEMPLATE
-        config = normalize_loaded_config_fields(config)
-        if BUNDLED_REALCUGAN_EXE.exists() and not command_executable_exists(config.realcugan_command_template):
-            config.realcugan_command_template = DEFAULT_REALCUGAN_TEMPLATE
-        if BUNDLED_REALESRGAN_EXE.exists() and not command_executable_exists(config.realesrgan_command_template):
-            config.realesrgan_command_template = DEFAULT_REALESRGAN_TEMPLATE
-        if "compare_split" in data and 0 <= int(data.get("compare_split", 500)) <= 100:
-            config.compare_split = int(data["compare_split"]) * 10
-        return config
+        return postprocess_loaded_config(config, data)
     except Exception:
         try:
             timestamp = time.strftime("%Y%m%d-%H%M%S")
@@ -804,8 +808,7 @@ def load_config() -> AppConfig:
                 CONFIG_PATH.write_text(CONFIG_BACKUP_PATH.read_text(encoding="utf-8-sig"), encoding="utf-8")
                 data = json.loads(CONFIG_PATH.read_text(encoding="utf-8-sig"))
                 config = AppConfig(**{**asdict(AppConfig()), **data})
-                config = normalize_loaded_config_fields(config)
-                return config
+                return postprocess_loaded_config(config, data)
         except Exception:
             pass
         return AppConfig()
@@ -2352,7 +2355,7 @@ class MainWindow(QMainWindow):
         self.side_panel_width_spin.setRange(240, 2000)
         self.side_panel_width_spin.setValue(max(240, int(self.config_data.side_panel_width)))
         self.side_panel_width_spin.valueChanged.connect(self.on_side_panel_width_changed)
-        viewer_form.addRow("右ペイン幅(px)", self.side_panel_width_spin)
+        viewer_form.addRow("ペインサイズ(px)", self.side_panel_width_spin)
         layout.addLayout(viewer_form)
         layout.addWidget(self.help_label("表示用に画像をメモリへ先読みする枚数。大きいほどページ送りは速くなりますが、メモリ使用量が増えます。"))
 
@@ -4111,7 +4114,11 @@ class MainWindow(QMainWindow):
             return False
         local = self.side_panel.mapFromGlobal(QCursor.pos())
         rect = self.side_panel.rect()
-        if not rect.adjusted(-SIDE_PANEL_HIDE_MARGIN, 0, SIDE_PANEL_HIDE_MARGIN, 0).contains(local):
+        if self.current_side_panel_position() in {"left", "right"}:
+            margin_rect = rect.adjusted(-SIDE_PANEL_HIDE_MARGIN, 0, SIDE_PANEL_HIDE_MARGIN, 0)
+        else:
+            margin_rect = rect.adjusted(0, -SIDE_PANEL_HIDE_MARGIN, 0, SIDE_PANEL_HIDE_MARGIN)
+        if not margin_rect.contains(local):
             return True
         if not rect.contains(local):
             return False
@@ -4247,8 +4254,19 @@ class MainWindow(QMainWindow):
         if not self.side_panel_overlay:
             return
         central = self.centralWidget().geometry()
-        width = min(self.clamped_side_panel_width(), max(1, central.width() // 2))
-        self.side_panel.setGeometry(central.right() - width + 1, central.top(), width, central.height())
+        position = self.current_side_panel_position()
+        extent = min(
+            self.clamped_side_panel_width(),
+            max(1, (central.width() // 2) if position in {"left", "right"} else (central.height() // 2)),
+        )
+        if position == "left":
+            self.side_panel.setGeometry(central.left(), central.top(), extent, central.height())
+        elif position == "right":
+            self.side_panel.setGeometry(central.right() - extent + 1, central.top(), extent, central.height())
+        elif position == "top":
+            self.side_panel.setGeometry(central.left(), central.top(), central.width(), extent)
+        else:
+            self.side_panel.setGeometry(central.left(), central.bottom() - extent + 1, central.width(), extent)
 
     def on_splitter_moved(self, _pos: int, _index: int) -> None:
         if self.adjusting_splitter or self.side_panel_overlay:
@@ -4302,6 +4320,8 @@ class MainWindow(QMainWindow):
         self.config_data.side_panel_position = position
         if not self.config_data.side_panel_detached and self.pin_button.isChecked():
             self.attach_side_panel_to_splitter(visible=True)
+        elif not self.config_data.side_panel_detached and self.side_panel_overlay:
+            self.position_overlay_side_panel()
         self.persist_config()
 
     def on_side_panel_detached_changed(self) -> None:
@@ -4471,19 +4491,53 @@ class MainWindow(QMainWindow):
                     self.persist_config()
                     self.layout_viewer_host()
             if self.side_panel_overlay and not self.pin_button.isChecked() and not self.config_data.side_panel_detached:
-                if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton and event.position().x() <= 18:
-                    self.overlay_resizing = True
-                    self.side_panel.setCursor(Qt.SizeHorCursor)
-                    return True
+                position = self.current_side_panel_position()
+                if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
+                    if position == "right":
+                        hit_grip = event.position().x() <= 18
+                        cursor_shape = Qt.SizeHorCursor
+                    elif position == "left":
+                        hit_grip = event.position().x() >= max(0, self.side_panel.width() - 18)
+                        cursor_shape = Qt.SizeHorCursor
+                    elif position == "top":
+                        hit_grip = event.position().y() >= max(0, self.side_panel.height() - 18)
+                        cursor_shape = Qt.SizeVerCursor
+                    else:
+                        hit_grip = event.position().y() <= 18
+                        cursor_shape = Qt.SizeVerCursor
+                    if hit_grip:
+                        self.overlay_resizing = True
+                        self.side_panel.setCursor(cursor_shape)
+                        return True
                 if event.type() == QEvent.MouseMove:
                     if self.overlay_resizing:
                         local = self.mapFromGlobal(event.globalPosition().toPoint())
-                        right = self.side_panel.geometry().right()
-                        self.side_panel_width = self.clamped_side_panel_width(right - local.x() + 1)
+                        panel_geometry = self.side_panel.geometry()
+                        if position == "right":
+                            extent = panel_geometry.right() - local.x() + 1
+                        elif position == "left":
+                            extent = local.x() - panel_geometry.left() + 1
+                        elif position == "top":
+                            extent = local.y() - panel_geometry.top() + 1
+                        else:
+                            extent = panel_geometry.bottom() - local.y() + 1
+                        self.side_panel_width = self.clamped_side_panel_width(extent)
                         self.config_data.side_panel_width = self.side_panel_width
                         self.position_overlay_side_panel()
                         return True
-                    self.side_panel.setCursor(Qt.SizeHorCursor if event.position().x() <= 18 else Qt.ArrowCursor)
+                    if position == "right":
+                        hover_grip = event.position().x() <= 18
+                        cursor_shape = Qt.SizeHorCursor
+                    elif position == "left":
+                        hover_grip = event.position().x() >= max(0, self.side_panel.width() - 18)
+                        cursor_shape = Qt.SizeHorCursor
+                    elif position == "top":
+                        hover_grip = event.position().y() >= max(0, self.side_panel.height() - 18)
+                        cursor_shape = Qt.SizeVerCursor
+                    else:
+                        hover_grip = event.position().y() <= 18
+                        cursor_shape = Qt.SizeVerCursor
+                    self.side_panel.setCursor(cursor_shape if hover_grip else Qt.ArrowCursor)
                 if event.type() == QEvent.MouseButtonRelease and self.overlay_resizing:
                     self.overlay_resizing = False
                     self.side_panel.unsetCursor()
@@ -4504,9 +4558,19 @@ class MainWindow(QMainWindow):
                 elif self.thumbnail_overlay_visible and not self.is_cursor_over_thumbnail_panel():
                     self.hide_thumbnail_overlay()
             if not self.pin_button.isChecked() and not self.config_data.side_panel_detached:
-                trigger_width = min(self.clamped_side_panel_width(), max(1, self.viewer.width() // 2))
+                position = self.current_side_panel_position()
+                trigger_extent = min(
+                    self.clamped_side_panel_width(),
+                    max(1, (self.viewer.width() // 2) if position in {"left", "right"} else (self.viewer.height() // 2)),
+                )
                 x = event.position().x()
-                if x >= self.viewer.width() - trigger_width:
+                y = event.position().y()
+                if (
+                    (position == "right" and x >= self.viewer.width() - trigger_extent)
+                    or (position == "left" and x <= trigger_extent)
+                    or (position == "top" and y <= trigger_extent)
+                    or (position == "bottom" and y >= self.viewer.height() - trigger_extent)
+                ):
                     self.show_side_panel()
                 elif self.side_panel_overlay and self.side_panel.isVisible() and self.should_hide_overlay_panel():
                     self.side_panel.hide()

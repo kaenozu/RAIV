@@ -33,11 +33,16 @@ def list_7z_members(tool: Path, archive_path: Path) -> list[str]:
     if completed.returncode != 0:
         raise ArchiveExtractionError(completed.stdout.strip())
     members: list[str] = []
+    header_path_skipped = False
     for line in completed.stdout.splitlines():
         if not line.startswith("Path = "):
             continue
         value = line[7:].strip()
         if not value:
+            continue
+        # `7z l -slt` emits the archive path as the first `Path = ...` header.
+        if not header_path_skipped:
+            header_path_skipped = True
             continue
         if value.endswith("/") or value.endswith("\\"):
             continue

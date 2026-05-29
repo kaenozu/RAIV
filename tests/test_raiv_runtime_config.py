@@ -43,7 +43,7 @@ def test_raiv_load_config_recovers_from_backup(tmp_path, monkeypatch) -> None:
     config_path = tmp_path / "setting.json"
     backup_path = tmp_path / "setting.json.bak"
     config_path.write_text("{broken json", encoding="utf-8")
-    backup_path.write_text(json.dumps({"sort_mode": "date"}, ensure_ascii=False), encoding="utf-8")
+    backup_path.write_text(json.dumps({"sort_mode": "date", "compare_split": 50}, ensure_ascii=False), encoding="utf-8")
 
     monkeypatch.setattr(raiv, "APP_DIR", tmp_path)
     monkeypatch.setattr(raiv, "CONFIG_PATH", config_path)
@@ -52,4 +52,5 @@ def test_raiv_load_config_recovers_from_backup(tmp_path, monkeypatch) -> None:
     loaded = raiv.load_config()
 
     assert loaded.sort_mode == "date"
+    assert loaded.compare_split == 500
     assert json.loads(config_path.read_text(encoding="utf-8"))["sort_mode"] == "date"

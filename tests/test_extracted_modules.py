@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 from PySide6.QtGui import QColor, QImage
 
-from archive_utils import archive_member_output_path, collect_archive_outputs, find_unsafe_archive_members
+from archive_utils import archive_member_output_path, collect_archive_outputs, find_unsafe_archive_members, list_7z_members
 from renderer_utils import compose_side_by_side_images, iter_difference_points
 from ui_text import UI_TEXT_EN, translate_binding_text, translate_state_text, translate_ui_text
 
@@ -37,6 +38,32 @@ def test_find_unsafe_archive_members_detects_traversal_paths() -> None:
 def test_find_unsafe_archive_members_detects_drive_prefix() -> None:
     unsafe = find_unsafe_archive_members(["C:/evil.png", "safe.png"])
     assert unsafe == ["C:/evil.png"]
+
+
+def test_list_7z_members_skips_archive_header_path(monkeypatch, tmp_path: Path) -> None:
+    archive_path = tmp_path / "sample.cb7"
+    output = "\n".join(
+        [
+            f"Path = {archive_path}",
+            "Type = 7z",
+            "",
+            "Path = images/1.png",
+            "Folder = -",
+            "",
+            "Path = images/",
+            "Folder = +",
+            "",
+        ]
+    )
+
+    def fake_run(*_args, **_kwargs):
+        return SimpleNamespace(returncode=0, stdout=output)
+
+    monkeypatch.setattr("archive_utils.subprocess.run", fake_run)
+
+    members = list_7z_members(Path("7z"), archive_path)
+
+    assert members == ["images/1.png"]
 
 
 def test_compose_side_by_side_images_uses_combined_width() -> None:
