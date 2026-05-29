@@ -2778,22 +2778,37 @@ class MainWindow(QMainWindow):
             available = QApplication.primaryScreen().availableGeometry()
         return available
 
-    def _restore_window_rect(self, values: list[int] | None) -> bool:
+    def _clamp_rect_to_available_geometry(
+        self,
+        values: list[int] | None,
+        minimum_width: int,
+        minimum_height: int,
+    ) -> tuple[int, int, int, int] | None:
         if not values or len(values) != 4:
-            return False
+            return None
         available = self._available_virtual_geometry()
         if available.isNull():
-            return False
+            return None
         try:
             x, y, width, height = [int(value) for value in values]
         except (TypeError, ValueError):
-            return False
-        width = max(640, min(width, max(640, available.width())))
-        height = max(480, min(height, max(480, available.height())))
+            return None
+        width = max(minimum_width, min(width, max(minimum_width, available.width())))
+        height = max(minimum_height, min(height, max(minimum_height, available.height())))
         x = max(available.left(), min(x, available.right() - width + 1))
         y = max(available.top(), min(y, available.bottom() - height + 1))
+        return x, y, width, height
+
+    def _restore_window_rect(self, values: list[int] | None) -> bool:
+        restored = self._clamp_rect_to_available_geometry(values, 640, 480)
+        if restored is None:
+            return False
+        x, y, width, height = restored
         self.setGeometry(x, y, width, height)
         return True
+
+    def _restore_side_panel_window_rect(self, values: list[int] | None) -> tuple[int, int, int, int] | None:
+        return self._clamp_rect_to_available_geometry(values, 240, 260)
 
     def _center_on_available_screen(self) -> None:
         available = self._available_virtual_geometry()
@@ -2906,7 +2921,7 @@ class MainWindow(QMainWindow):
         side_panel_width = self.config_data.side_panel_width
         if side_panel is not None:
             side_panel_width = int(self.side_panel_width)
-            if side_panel_detached and side_panel.isVisible():
+            if side_panel_detached:
                 rect = side_panel.geometry()
                 side_panel_window_rect = [rect.x(), rect.y(), rect.width(), rect.height()]
 
@@ -4222,12 +4237,10 @@ class MainWindow(QMainWindow):
                 self.side_panel.installEventFilter(self)
                 self.side_panel_overlay = True
             rect = getattr(self.config_data, "side_panel_window_rect", None)
-            if rect and len(rect) == 4:
-                try:
-                    x, y, w, h = [int(v) for v in rect]
-                    self.side_panel.setGeometry(x, y, max(240, w), max(260, h))
-                except (TypeError, ValueError):
-                    pass
+            restored = self._restore_side_panel_window_rect(rect)
+            if restored is not None:
+                x, y, w, h = restored
+                self.side_panel.setGeometry(x, y, w, h)
             self.side_panel.setVisible(visible)
             if visible:
                 self.side_panel.raise_()

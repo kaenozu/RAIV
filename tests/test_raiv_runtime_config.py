@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+from PySide6.QtCore import QRect
+
 import raiv
 
 
@@ -54,3 +56,18 @@ def test_raiv_load_config_recovers_from_backup(tmp_path, monkeypatch) -> None:
     assert loaded.sort_mode == "date"
     assert loaded.compare_split == 500
     assert json.loads(config_path.read_text(encoding="utf-8"))["sort_mode"] == "date"
+
+
+def test_side_panel_window_rect_is_clamped_to_available_geometry() -> None:
+    class DummyWindow:
+        _clamp_rect_to_available_geometry = raiv.MainWindow._clamp_rect_to_available_geometry
+
+        def _available_virtual_geometry(self) -> QRect:
+            return QRect(0, 0, 1920, 1080)
+
+    restored = raiv.MainWindow._restore_side_panel_window_rect(
+        DummyWindow(),
+        [-100, -50, 5000, 4000],
+    )
+
+    assert restored == (0, 0, 1920, 1080)

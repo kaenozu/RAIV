@@ -112,6 +112,14 @@ def test_format_command_template_rejects_unknown_placeholder() -> None:
     raise AssertionError("Expected ValueError for missing placeholder")
 
 
+def test_format_command_template_rejects_attribute_access() -> None:
+    try:
+        format_command_template("tool.exe -i {input.foo}", {"input": "a.png"})
+    except ValueError:
+        return
+    raise AssertionError("Expected ValueError for attribute access in placeholder")
+
+
 def test_format_command_template_rejects_invalid_braces() -> None:
     try:
         format_command_template('tool.exe -i "{input"', {"input": "a.png"})

@@ -42,7 +42,7 @@ def split_command_line(command: str) -> list[str]:
 def format_command_template(command_template: str, values: Mapping[str, object]) -> str:
     try:
         return command_template.format(**values)
-    except (KeyError, ValueError, IndexError) as exc:
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError) as exc:
         raise ValueError(str(exc)) from exc
 
 
