@@ -23,6 +23,7 @@ import shutil
 import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from typing import TypeGuard
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QKeySequence
@@ -425,7 +426,7 @@ def normalize_key_bindings(value: object) -> dict[str, dict[str, dict | None]]:
     return normalized
 
 
-def _is_real_int(value: object) -> bool:
+def _is_real_int(value: object) -> TypeGuard[int]:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
