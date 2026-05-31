@@ -5,8 +5,8 @@ import os
 import shutil
 import subprocess
 import zipfile
+from collections.abc import Callable, Iterable
 from pathlib import Path
-from typing import Callable, Iterable
 
 from exceptions import ArchiveExtractionError, ArchiveToolNotFoundError, UnsupportedArchiveFormatError
 from helpers import archive_display_name, natural_sort_key, safe_archive_member_parts

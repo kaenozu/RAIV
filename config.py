@@ -21,6 +21,7 @@ import logging
 import os
 import shutil
 import sys
+import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import TypeGuard
@@ -41,6 +42,7 @@ APP_SHORT_NAME = "RAIV"
 APP_ID = "RealtimeAIImageViewer.RAIV"
 APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 CONFIG_PATH = APP_DIR / "setting.json"
+CONFIG_BACKUP_PATH = APP_DIR / "setting.json.bak"
 APP_ICON_ICO = APP_DIR / "assets" / "app_icon.ico"
 APP_ICON_PNG = APP_DIR / "assets" / "app_icon.png"
 REALESRGAN_FIXED_SCALE = 4
@@ -66,7 +68,9 @@ ENGINE_LABELS = {
 }
 REALESRGAN_MODELS = ["realesr-animevideov3", "realesrgan-x4plus", "realesrgan-x4plus-anime"]
 MIN_SIDE_PANEL_WIDTH = 240
+DEFAULT_ENGINE_RETRY_COUNT = 1
 MAX_ENGINE_RETRY_COUNT = 5
+DEFAULT_THUMBNAIL_WORKER_COUNT = 1
 MAX_THUMBNAIL_WORKER_COUNT = 4
 MAX_SLIDESHOW_INTERVAL_SEC = 30
 MAX_COMPARE_DIFF_THRESHOLD = 255
@@ -93,7 +97,28 @@ THUMBNAIL_HIDE_DELAY_MS = 220
 SIDE_PANEL_HIDE_GRACE_SEC = 0.45
 SIDE_PANEL_HIDE_MARGIN = 36
 SIDE_PANEL_HIDE_DELAY_MS = 220
+SIDE_PANEL_POSITIONS = {
+    "right": "右",
+    "left": "左",
+    "top": "上",
+    "bottom": "下",
+}
 PROFILE_UPDATE_INTERVAL_MS = 500
+DEFAULT_MAX_SAFE_IMAGE_PIXELS = 120_000_000
+ENABLE_COMPARE_MODE = False
+DEFAULT_BACKGROUND_COLOR = "#000000"
+DIALOG_ACCEPT_TEXT = "OK"
+SETTINGS_TABS = ("realcugan", "general", "keyconfig")
+MODIFIER_LABELS = {
+    Qt.ControlModifier.value: "Ctrl",
+    Qt.ShiftModifier.value: "Shift",
+    Qt.AltModifier.value: "Alt",
+}
+SORT_MODES = {
+    "name": "Name",
+    "date": "Date",
+    "natural": "Natural",
+}
 RESAMPLE_ALGORITHMS = {
     "lanczos3": "Lanczos3",
     "lanczos4": "Lanczos4",
@@ -105,6 +130,11 @@ MODIFIER_MASK = (
     | Qt.ShiftModifier.value
     | Qt.AltModifier.value
 )
+type BindingValue = dict[str, int | bool]
+type BindingMap = dict[str, dict[str, BindingValue | None]]
+type ProcessingKey = tuple[str, str, int, int, int, str]
+type ArchiveDisplayMap = dict[Path, str]
+
 ACTION_DEFS = [
     ("open_image", "画像を開く"),
     ("open_folder", "フォルダを開く"),
@@ -157,6 +187,7 @@ UI_TEXT_EN = {
     "realesr-animevideov3: アニメ/イラスト向けの軽量標準モデル。 realesrgan-x4plus: 写真や一般画像向け。 realesrgan-x4plus-anime: アニメ/イラスト向けのx4plus派生モデル。 RAIVではReal-ESRGAN選択中、倍率は4倍固定として処理します。": "realesr-animevideov3: lightweight standard model for anime/illustration. realesrgan-x4plus: for photos and general images. realesrgan-x4plus-anime: x4plus-derived model for anime/illustration. In RAIV, Real-ESRGAN is processed at fixed 4x scale.",
     "tile: 0 は自動。小さめの値はGPUメモリ使用量を抑えますが、遅くなることがあります。": "tile: 0 is automatic. Smaller values can reduce GPU memory usage but may be slower.",
     "エンジン先読み": "Engine prefetch",
+    "エンジン再試行回数": "Engine retry count",
     "選択中の拡大エンジンで処理を先に進める枚数。大きいほど待ち時間を減らせますが、GPU負荷と一時ファイル作成が増えます。": "Number of images to process ahead with the selected engine. Higher values reduce waiting but increase GPU load and temporary files.",
     "縦サイズが閾値以上なら拡大処理しない": "Skip processing when height is at or above threshold",
     "縦サイズ閾値(px)": "Height threshold (px)",
@@ -167,10 +198,15 @@ UI_TEXT_EN = {
     "再実行": "Run again",
     "コマンドテンプレート": "Command template",
     "エンジンexeを選択": "Select engine exe",
+    "エンジンバージョン": "Engine version",
+    "診断": "Diagnostics",
+    "環境診断を表示": "Show environment diagnostics",
     "使用できる置換: {input} {output} {scale} {denoise} {tile} {model}": "Available placeholders: {input} {output} {scale} {denoise} {tile} {model}",
     "次回起動時に古い一時ファイルを削除": "Delete old temporary files on next startup",
     "表示言語": "Language",
     "ビューアー先読み": "Viewer prefetch",
+    "並び順": "Sort order",
+    "ペインサイズ(px)": "Panel size (px)",
     "表示用に画像をメモリへ先読みする枚数。大きいほどページ送りは速くなりますが、メモリ使用量が増えます。": "Number of images to preload into memory for display. Higher values make page navigation faster but use more memory.",
     "CPUリサンプルキャッシュを使う": "Use CPU resample cache",
     "表示リサンプル方式": "Display resampling method",
@@ -186,6 +222,8 @@ UI_TEXT_EN = {
     "境界線の太さ(px)": "Divider width (px)",
     "比較の左右を入れ替える": "Swap compare sides",
     "比較中はShift+ドラッグで境界線を動かす": "Use Shift+drag to move divider in compare mode",
+    "差分ハイライト表示": "Show difference highlight",
+    "差分しきい値": "Difference threshold",
     "ズーム: 100%": "Zoom: 100%",
     "表示を中央へリセット": "Reset view to center",
     "ページ送り間隔(ms)": "Page interval (ms)",
@@ -198,17 +236,22 @@ UI_TEXT_EN = {
     "サムネイル列を固定表示する": "Pin thumbnail strip",
     "最後/最初でページ送りしたら反対側へ移動": "Wrap around at first/last page",
     "ページ送り時にズームと表示位置を維持": "Preserve zoom and position when changing pages",
+    "見開き表示モード": "Two-page spread mode",
+    "EXIF回転情報を表示に反映": "Apply EXIF orientation",
     "マウス横スクロールでページ送り": "Use horizontal mouse wheel for page navigation",
     "横スクロールのページ送り方向を反転": "Reverse horizontal wheel direction",
     "全画面表示時にマウスカーソルを非表示": "Hide mouse cursor in fullscreen",
     "画像またはフォルダ/アーカイブをドロップしてください": "Drop an image, folder, or archive",
     "状態": "Status",
     "ログを表示": "Show log",
+    "ログレベル": "Log level",
     "拡大前メモリ読込": "Original memory load",
     "拡大画像生成": "Processed image generation",
     "拡大後メモリ読込": "Processed memory load",
     "表示用QPixmap": "Display QPixmap",
     "ログ": "Log",
+    "デバッグ情報をコピー": "Copy debug info",
+    "デバッグ情報をクリップボードへコピーしました。": "Copied debug info to clipboard.",
     "内部プロファイリングを表示": "Show internal profiling",
     "設定値をクリックすると割当を変更できます。Escを入力すると未割当に戻ります。Spaceは次ページ、Backspaceは前ページとして固定です。": "Click a binding value to change it. Press Esc to clear it. Space is fixed to next page and Backspace is fixed to previous page.",
     "機能": "Action",
@@ -216,6 +259,7 @@ UI_TEXT_EN = {
     "マウス": "Mouse",
     "キーコンフィグを初期値に戻す": "Reset key config to defaults",
     "重複しているため、この割当は無効です。": "This binding is duplicated and disabled.",
+    "重複しているため、この割当は無効です。キーを再設定してください。": "This binding is duplicated and disabled. Reassign it.",
     "未割当": "Unassigned",
     "左クリック": "Left click",
     "右クリック": "Right click",
@@ -275,6 +319,92 @@ def default_key_bindings() -> dict[str, dict[str, dict | None]]:
 
 
 @dataclass
+class EngineConfigDomain:
+    engine: str = ENGINE_REALCUGAN
+    command_template: str = DEFAULT_REALCUGAN_TEMPLATE
+    realcugan_command_template: str = DEFAULT_REALCUGAN_TEMPLATE
+    realesrgan_command_template: str = DEFAULT_REALESRGAN_TEMPLATE
+    scale: int = 2
+    denoise: int = 0
+    tile: int = 0
+    engine_retry_count: int = DEFAULT_ENGINE_RETRY_COUNT
+    realesrgan_model: str = "realesr-animevideov3"
+    realcugan_prefetch_count: int = 10
+    save_upscaled_to_scale_folder: bool = False
+    use_scale_folder_cache: bool = True
+    skip_realcugan_for_tall_images: bool = True
+    skip_realcugan_height_threshold: int = 2160
+    engine_presets: dict[str, dict[str, object]] = field(default_factory=dict)
+
+
+@dataclass
+class ViewerConfigDomain:
+    viewer_prefetch_count: int = 20
+    thumbnail_worker_count: int = DEFAULT_THUMBNAIL_WORKER_COUNT
+    sort_mode: str = "name"
+    recent_dirs: list[str] = field(default_factory=list)
+    bookmarks: list[str] = field(default_factory=list)
+    favorites: list[str] = field(default_factory=list)
+    slideshow_enabled: bool = False
+    slideshow_interval_sec: int = 3
+    slideshow_pause_if_processing: bool = True
+    spread_mode_enabled: bool = False
+    exif_auto_orient: bool = True
+    cpu_resample_cache_enabled: bool = True
+    cpu_resample_algorithm: str = "lanczos3"
+    thumbnail_enabled: bool = True
+    thumbnail_pinned: bool = False
+    thumbnail_size: int = 96
+    thumbnail_height: int = 142
+    horizontal_wheel_navigation: bool = False
+    horizontal_wheel_inverted: bool = False
+    wrap_page_navigation: bool = False
+    preserve_view_on_page_navigation: bool = False
+    invert_page_position_slider: bool = True
+    page_scroll_interval_ms: int = 1
+    page_jump_value: int = 1
+    max_safe_image_pixels: int = DEFAULT_MAX_SAFE_IMAGE_PIXELS
+
+
+@dataclass
+class CompareConfigDomain:
+    compare_enabled: bool = False
+    compare_split: int = 500
+    compare_line_color: str = "#ffffff"
+    compare_line_width: int = 2
+    compare_swap_sides: bool = False
+    compare_shift_drag_moves_boundary: bool = False
+    compare_diff_highlight: bool = False
+    compare_diff_threshold: int = 24
+
+
+@dataclass
+class UiConfigDomain:
+    background_color: str = "#000000"
+    zoom_label_precision: int = 0
+    hide_cursor_in_fullscreen: bool = False
+    show_log_panel: bool = False
+    log_level: str = "INFO"
+    show_profile_panel: bool = False
+    ui_language: str = "ja"
+    arrow_right_next: bool = True
+    key_bindings: dict[str, dict[str, dict | None]] = field(default_factory=default_key_bindings)
+    cleanup_temp_on_start: bool = False
+    settings_tab: str = "realcugan"
+    window_rect: list[int] | None = None
+    window_maximized: bool = False
+    window_geometry: str = ""
+    side_panel_visible: bool = True
+    side_panel_pinned: bool = True
+    side_panel_width: int = 460
+    side_panel_position: str = "right"
+    side_panel_detached: bool = False
+    side_panel_window_rect: list[int] | None = None
+    splitter_sizes: list[int] | None = None
+    last_dir: str = ""
+
+
+@dataclass
 class AppConfig:
     engine: str = ENGINE_REALCUGAN
     command_template: str = DEFAULT_REALCUGAN_TEMPLATE
@@ -283,11 +413,11 @@ class AppConfig:
     scale: int = 2
     denoise: int = 0
     tile: int = 0
-    engine_retry_count: int = 1
+    engine_retry_count: int = DEFAULT_ENGINE_RETRY_COUNT
     realesrgan_model: str = "realesr-animevideov3"
     realcugan_prefetch_count: int = 10
     viewer_prefetch_count: int = 20
-    thumbnail_worker_count: int = 1
+    thumbnail_worker_count: int = DEFAULT_THUMBNAIL_WORKER_COUNT
     sort_mode: str = "name"
     recent_dirs: list[str] = field(default_factory=list)
     bookmarks: list[str] = field(default_factory=list)
@@ -345,7 +475,175 @@ class AppConfig:
     splitter_sizes: list[int] | None = None
     last_dir: str = ""
     page_jump_value: int = 1
-    max_safe_image_pixels: int = 120_000_000
+    max_safe_image_pixels: int = DEFAULT_MAX_SAFE_IMAGE_PIXELS
+
+    def engine_domain(self) -> EngineConfigDomain:
+        return EngineConfigDomain(
+            engine=self.engine,
+            command_template=self.command_template,
+            realcugan_command_template=self.realcugan_command_template,
+            realesrgan_command_template=self.realesrgan_command_template,
+            scale=self.scale,
+            denoise=self.denoise,
+            tile=self.tile,
+            engine_retry_count=self.engine_retry_count,
+            realesrgan_model=self.realesrgan_model,
+            realcugan_prefetch_count=self.realcugan_prefetch_count,
+            save_upscaled_to_scale_folder=self.save_upscaled_to_scale_folder,
+            use_scale_folder_cache=self.use_scale_folder_cache,
+            skip_realcugan_for_tall_images=self.skip_realcugan_for_tall_images,
+            skip_realcugan_height_threshold=self.skip_realcugan_height_threshold,
+            engine_presets=dict(self.engine_presets),
+        )
+
+    def viewer_domain(self) -> ViewerConfigDomain:
+        return ViewerConfigDomain(
+            viewer_prefetch_count=self.viewer_prefetch_count,
+            thumbnail_worker_count=self.thumbnail_worker_count,
+            sort_mode=self.sort_mode,
+            recent_dirs=list(self.recent_dirs),
+            bookmarks=list(self.bookmarks),
+            favorites=list(self.favorites),
+            slideshow_enabled=self.slideshow_enabled,
+            slideshow_interval_sec=self.slideshow_interval_sec,
+            slideshow_pause_if_processing=self.slideshow_pause_if_processing,
+            spread_mode_enabled=self.spread_mode_enabled,
+            exif_auto_orient=self.exif_auto_orient,
+            cpu_resample_cache_enabled=self.cpu_resample_cache_enabled,
+            cpu_resample_algorithm=self.cpu_resample_algorithm,
+            thumbnail_enabled=self.thumbnail_enabled,
+            thumbnail_pinned=self.thumbnail_pinned,
+            thumbnail_size=self.thumbnail_size,
+            thumbnail_height=self.thumbnail_height,
+            horizontal_wheel_navigation=self.horizontal_wheel_navigation,
+            horizontal_wheel_inverted=self.horizontal_wheel_inverted,
+            wrap_page_navigation=self.wrap_page_navigation,
+            preserve_view_on_page_navigation=self.preserve_view_on_page_navigation,
+            invert_page_position_slider=self.invert_page_position_slider,
+            page_scroll_interval_ms=self.page_scroll_interval_ms,
+            page_jump_value=self.page_jump_value,
+            max_safe_image_pixels=self.max_safe_image_pixels,
+        )
+
+    def compare_domain(self) -> CompareConfigDomain:
+        return CompareConfigDomain(
+            compare_enabled=self.compare_enabled,
+            compare_split=self.compare_split,
+            compare_line_color=self.compare_line_color,
+            compare_line_width=self.compare_line_width,
+            compare_swap_sides=self.compare_swap_sides,
+            compare_shift_drag_moves_boundary=self.compare_shift_drag_moves_boundary,
+            compare_diff_highlight=self.compare_diff_highlight,
+            compare_diff_threshold=self.compare_diff_threshold,
+        )
+
+    def ui_domain(self) -> UiConfigDomain:
+        return UiConfigDomain(
+            background_color=self.background_color,
+            zoom_label_precision=self.zoom_label_precision,
+            hide_cursor_in_fullscreen=self.hide_cursor_in_fullscreen,
+            show_log_panel=self.show_log_panel,
+            log_level=self.log_level,
+            show_profile_panel=self.show_profile_panel,
+            ui_language=self.ui_language,
+            arrow_right_next=self.arrow_right_next,
+            key_bindings=normalize_key_bindings(self.key_bindings),
+            cleanup_temp_on_start=self.cleanup_temp_on_start,
+            settings_tab=self.settings_tab,
+            window_rect=list(self.window_rect) if self.window_rect is not None else None,
+            window_maximized=self.window_maximized,
+            window_geometry=self.window_geometry,
+            side_panel_visible=self.side_panel_visible,
+            side_panel_pinned=self.side_panel_pinned,
+            side_panel_width=self.side_panel_width,
+            side_panel_position=self.side_panel_position,
+            side_panel_detached=self.side_panel_detached,
+            side_panel_window_rect=list(self.side_panel_window_rect) if self.side_panel_window_rect is not None else None,
+            splitter_sizes=list(self.splitter_sizes) if self.splitter_sizes is not None else None,
+            last_dir=self.last_dir,
+        )
+
+    def apply_domains(
+        self,
+        engine: EngineConfigDomain | None = None,
+        viewer: ViewerConfigDomain | None = None,
+        compare: CompareConfigDomain | None = None,
+        ui: UiConfigDomain | None = None,
+    ) -> None:
+        if engine is not None:
+            self.engine = engine.engine
+            self.command_template = engine.command_template
+            self.realcugan_command_template = engine.realcugan_command_template
+            self.realesrgan_command_template = engine.realesrgan_command_template
+            self.scale = engine.scale
+            self.denoise = engine.denoise
+            self.tile = engine.tile
+            self.engine_retry_count = engine.engine_retry_count
+            self.realesrgan_model = engine.realesrgan_model
+            self.realcugan_prefetch_count = engine.realcugan_prefetch_count
+            self.save_upscaled_to_scale_folder = engine.save_upscaled_to_scale_folder
+            self.use_scale_folder_cache = engine.use_scale_folder_cache
+            self.skip_realcugan_for_tall_images = engine.skip_realcugan_for_tall_images
+            self.skip_realcugan_height_threshold = engine.skip_realcugan_height_threshold
+            self.engine_presets = dict(engine.engine_presets)
+        if viewer is not None:
+            self.viewer_prefetch_count = viewer.viewer_prefetch_count
+            self.thumbnail_worker_count = viewer.thumbnail_worker_count
+            self.sort_mode = viewer.sort_mode
+            self.recent_dirs = list(viewer.recent_dirs)
+            self.bookmarks = list(viewer.bookmarks)
+            self.favorites = list(viewer.favorites)
+            self.slideshow_enabled = viewer.slideshow_enabled
+            self.slideshow_interval_sec = viewer.slideshow_interval_sec
+            self.slideshow_pause_if_processing = viewer.slideshow_pause_if_processing
+            self.spread_mode_enabled = viewer.spread_mode_enabled
+            self.exif_auto_orient = viewer.exif_auto_orient
+            self.cpu_resample_cache_enabled = viewer.cpu_resample_cache_enabled
+            self.cpu_resample_algorithm = viewer.cpu_resample_algorithm
+            self.thumbnail_enabled = viewer.thumbnail_enabled
+            self.thumbnail_pinned = viewer.thumbnail_pinned
+            self.thumbnail_size = viewer.thumbnail_size
+            self.thumbnail_height = viewer.thumbnail_height
+            self.horizontal_wheel_navigation = viewer.horizontal_wheel_navigation
+            self.horizontal_wheel_inverted = viewer.horizontal_wheel_inverted
+            self.wrap_page_navigation = viewer.wrap_page_navigation
+            self.preserve_view_on_page_navigation = viewer.preserve_view_on_page_navigation
+            self.invert_page_position_slider = viewer.invert_page_position_slider
+            self.page_scroll_interval_ms = viewer.page_scroll_interval_ms
+            self.page_jump_value = viewer.page_jump_value
+            self.max_safe_image_pixels = viewer.max_safe_image_pixels
+        if compare is not None:
+            self.compare_enabled = compare.compare_enabled
+            self.compare_split = compare.compare_split
+            self.compare_line_color = compare.compare_line_color
+            self.compare_line_width = compare.compare_line_width
+            self.compare_swap_sides = compare.compare_swap_sides
+            self.compare_shift_drag_moves_boundary = compare.compare_shift_drag_moves_boundary
+            self.compare_diff_highlight = compare.compare_diff_highlight
+            self.compare_diff_threshold = compare.compare_diff_threshold
+        if ui is not None:
+            self.background_color = ui.background_color
+            self.zoom_label_precision = ui.zoom_label_precision
+            self.hide_cursor_in_fullscreen = ui.hide_cursor_in_fullscreen
+            self.show_log_panel = ui.show_log_panel
+            self.log_level = ui.log_level
+            self.show_profile_panel = ui.show_profile_panel
+            self.ui_language = ui.ui_language
+            self.arrow_right_next = ui.arrow_right_next
+            self.key_bindings = normalize_key_bindings(ui.key_bindings)
+            self.cleanup_temp_on_start = ui.cleanup_temp_on_start
+            self.settings_tab = ui.settings_tab
+            self.window_rect = list(ui.window_rect) if ui.window_rect is not None else None
+            self.window_maximized = ui.window_maximized
+            self.window_geometry = ui.window_geometry
+            self.side_panel_visible = ui.side_panel_visible
+            self.side_panel_pinned = ui.side_panel_pinned
+            self.side_panel_width = ui.side_panel_width
+            self.side_panel_position = ui.side_panel_position if ui.side_panel_position in SIDE_PANEL_POSITIONS else "right"
+            self.side_panel_detached = bool(ui.side_panel_detached)
+            self.side_panel_window_rect = list(ui.side_panel_window_rect) if ui.side_panel_window_rect is not None else None
+            self.splitter_sizes = list(ui.splitter_sizes) if ui.splitter_sizes is not None else None
+            self.last_dir = ui.last_dir
 
 
 def set_process_app_user_model_id() -> None:
@@ -397,7 +695,7 @@ def normalize_key_bindings(value: object) -> dict[str, dict[str, dict | None]]:
     defaults = default_key_bindings()
     if not isinstance(value, dict):
         return defaults
-    normalized = defaults
+    normalized = dict(defaults)
     for action_id, parts in value.items():
         if action_id not in normalized or not isinstance(parts, dict):
             continue
@@ -460,6 +758,47 @@ def _normalize_engine_presets(value: object) -> dict[str, dict[str, object]]:
     }
 
 
+def normalize_loaded_config_fields(config: AppConfig) -> AppConfig:
+    if config.engine not in ENGINE_LABELS:
+        config.engine = ENGINE_REALCUGAN
+    if config.realesrgan_model not in REALESRGAN_MODELS:
+        config.realesrgan_model = REALESRGAN_MODELS[0]
+    if config.cpu_resample_algorithm not in RESAMPLE_ALGORITHMS:
+        config.cpu_resample_algorithm = "lanczos3"
+    if config.ui_language not in {"ja", "en"}:
+        config.ui_language = "ja"
+    config.log_level = sanitize_log_level(config.log_level)
+    config.zoom_label_precision = max(0, min(MAX_ZOOM_LABEL_PRECISION, int(getattr(config, "zoom_label_precision", 0))))
+    config.page_jump_value = max(1, int(getattr(config, "page_jump_value", 1)))
+    if config.sort_mode not in SORT_MODES:
+        config.sort_mode = "name"
+    config.thumbnail_worker_count = max(1, min(MAX_THUMBNAIL_WORKER_COUNT, int(getattr(config, "thumbnail_worker_count", DEFAULT_THUMBNAIL_WORKER_COUNT))))
+    if not isinstance(config.recent_dirs, list):
+        config.recent_dirs = []
+    config.recent_dirs = [str(item) for item in config.recent_dirs if isinstance(item, str) and item.strip()][:MAX_RECENT_DIRS]
+    if not isinstance(config.bookmarks, list):
+        config.bookmarks = []
+    config.bookmarks = [str(item) for item in config.bookmarks if isinstance(item, str) and item.strip()]
+    if not isinstance(config.favorites, list):
+        config.favorites = []
+    config.favorites = [str(item) for item in config.favorites if isinstance(item, str) and item.strip()]
+    config.slideshow_enabled = bool(getattr(config, "slideshow_enabled", False))
+    config.slideshow_interval_sec = max(1, min(MAX_SLIDESHOW_INTERVAL_SEC, int(getattr(config, "slideshow_interval_sec", 3))))
+    config.slideshow_pause_if_processing = bool(getattr(config, "slideshow_pause_if_processing", True))
+    config.spread_mode_enabled = bool(getattr(config, "spread_mode_enabled", False))
+    config.exif_auto_orient = bool(getattr(config, "exif_auto_orient", True))
+    if not isinstance(config.engine_presets, dict):
+        config.engine_presets = {}
+    config.engine_retry_count = max(0, min(MAX_ENGINE_RETRY_COUNT, int(getattr(config, "engine_retry_count", DEFAULT_ENGINE_RETRY_COUNT))))
+    config.compare_diff_highlight = bool(getattr(config, "compare_diff_highlight", False))
+    config.compare_diff_threshold = max(0, min(MAX_COMPARE_DIFF_THRESHOLD, int(getattr(config, "compare_diff_threshold", 24))))
+    config.max_safe_image_pixels = max(MIN_SAFE_IMAGE_PIXELS, int(getattr(config, "max_safe_image_pixels", DEFAULT_MAX_SAFE_IMAGE_PIXELS)))
+    config.thumbnail_height = max(THUMBNAIL_MIN_HEIGHT, min(THUMBNAIL_MAX_HEIGHT, int(getattr(config, "thumbnail_height", 142))))
+    config.thumbnail_size = max(48, min(256, int(getattr(config, "thumbnail_size", 96))))
+    config.key_bindings = normalize_key_bindings(getattr(config, "key_bindings", None))
+    return config
+
+
 def load_config() -> AppConfig:
     if not CONFIG_PATH.exists():
         return AppConfig()
@@ -474,15 +813,7 @@ def load_config() -> AppConfig:
             config.realesrgan_command_template = DEFAULT_REALESRGAN_TEMPLATE
         if "realcugan_command_template" not in data:
             config.realcugan_command_template = config.command_template or DEFAULT_REALCUGAN_TEMPLATE
-        if config.engine not in ENGINE_LABELS:
-            config.engine = ENGINE_REALCUGAN
-        if config.realesrgan_model not in REALESRGAN_MODELS:
-            config.realesrgan_model = REALESRGAN_MODELS[0]
-        if config.cpu_resample_algorithm not in RESAMPLE_ALGORITHMS:
-            config.cpu_resample_algorithm = "lanczos3"
-        if config.ui_language not in {"ja", "en"}:
-            config.ui_language = "ja"
-        if config.side_panel_position not in {"left", "right", "top", "bottom"}:
+        if config.side_panel_position not in SIDE_PANEL_POSITIONS:
             config.side_panel_position = "right"
         if not isinstance(config.side_panel_detached, bool):
             config.side_panel_detached = False
@@ -493,7 +824,7 @@ def load_config() -> AppConfig:
             config.side_panel_window_rect = None
         config.thumbnail_worker_count = _clamp_int(
             config.thumbnail_worker_count,
-            1,
+            DEFAULT_THUMBNAIL_WORKER_COUNT,
             1,
             MAX_THUMBNAIL_WORKER_COUNT,
         )
@@ -502,30 +833,54 @@ def load_config() -> AppConfig:
         config.favorites = _normalize_str_list(config.favorites)
         config.slideshow_interval_sec = _clamp_int(config.slideshow_interval_sec, 3, 1, MAX_SLIDESHOW_INTERVAL_SEC)
         config.engine_presets = _normalize_engine_presets(config.engine_presets)
-        config.engine_retry_count = _clamp_int(config.engine_retry_count, 1, 0, MAX_ENGINE_RETRY_COUNT)
+        config.engine_retry_count = _clamp_int(config.engine_retry_count, DEFAULT_ENGINE_RETRY_COUNT, 0, MAX_ENGINE_RETRY_COUNT)
         config.compare_diff_threshold = _clamp_int(config.compare_diff_threshold, 24, 0, MAX_COMPARE_DIFF_THRESHOLD)
         config.zoom_label_precision = _clamp_int(config.zoom_label_precision, 0, 0, MAX_ZOOM_LABEL_PRECISION)
         config.log_level = sanitize_log_level(config.log_level)
         config.page_jump_value = _clamp_int(config.page_jump_value, 1, 1)
-        config.max_safe_image_pixels = _clamp_int(config.max_safe_image_pixels, 120_000_000, MIN_SAFE_IMAGE_PIXELS)
+        config.max_safe_image_pixels = _clamp_int(config.max_safe_image_pixels, DEFAULT_MAX_SAFE_IMAGE_PIXELS, MIN_SAFE_IMAGE_PIXELS)
         config.key_bindings = normalize_key_bindings(getattr(config, "key_bindings", None))
+        config = normalize_loaded_config_fields(config)
         if BUNDLED_REALCUGAN_EXE.exists() and not command_executable_exists(config.realcugan_command_template):
             config.realcugan_command_template = DEFAULT_REALCUGAN_TEMPLATE
         if BUNDLED_REALESRGAN_EXE.exists() and not command_executable_exists(config.realesrgan_command_template):
             config.realesrgan_command_template = DEFAULT_REALESRGAN_TEMPLATE
-        if "compare_split" in data and 0 <= int(data.get("compare_split", 500)) <= 100:
+        if "compare_split" in data and _is_real_int(data.get("compare_split", 500)) and 0 <= int(data["compare_split"]) <= 100:
             config.compare_split = int(data["compare_split"]) * 10
         return config
     except Exception as exc:
         logging.getLogger(__name__).warning("Failed to load config from %s: %s", CONFIG_PATH, exc)
+        try:
+            timestamp = time.strftime("%Y%m%d-%H%M%S")
+            broken = APP_DIR / f"setting.json.corrupt.{timestamp}"
+            if CONFIG_PATH.exists():
+                CONFIG_PATH.replace(broken)
+        except Exception:
+            pass
+        try:
+            if CONFIG_BACKUP_PATH.exists():
+                CONFIG_PATH.write_text(CONFIG_BACKUP_PATH.read_text(encoding="utf-8-sig"), encoding="utf-8")
+                data = json.loads(CONFIG_PATH.read_text(encoding="utf-8-sig"))
+                config = AppConfig(**{**asdict(AppConfig()), **data})
+                config = normalize_loaded_config_fields(config)
+                if "compare_split" in data and _is_real_int(data.get("compare_split", 500)) and 0 <= int(data["compare_split"]) <= 100:
+                    config.compare_split = int(data["compare_split"]) * 10
+                return config
+        except Exception:
+            pass
         return AppConfig()
 
 
 def save_config(config: AppConfig) -> None:
+    payload = json.dumps(asdict(config), ensure_ascii=False, indent=2)
     try:
-        CONFIG_PATH.write_text(json.dumps(asdict(config), ensure_ascii=False, indent=2), encoding="utf-8")
-    except OSError as exc:
-        logging.getLogger(__name__).error("Failed to save config to %s: %s", CONFIG_PATH, exc)
+        if CONFIG_PATH.exists():
+            shutil.copy2(CONFIG_PATH, CONFIG_BACKUP_PATH)
+    except Exception:
+        pass
+    temp_path = APP_DIR / "setting.json.tmp"
+    temp_path.write_text(payload, encoding="utf-8")
+    temp_path.replace(CONFIG_PATH)
 
 
 def modifier_value(modifiers) -> int:
@@ -612,3 +967,31 @@ def duplicate_binding_signatures(bindings: dict[str, dict[str, dict | None]], ki
         else:
             seen[signature] = action_id
     return duplicates
+
+
+def coerce_int(value: object, default: int) -> int:
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return default
+    return default
+
+
+def coerce_float(value: object, default: float) -> float:
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return default
+    return default

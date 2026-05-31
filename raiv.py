@@ -1,4 +1,4 @@
-﻿"""
+"""
 raiv.py
 
 Realtime AI Image Viewer (RAIV) のメインエントリポイント。
@@ -20,7 +20,6 @@ Real-CUGAN / Real-ESRGAN による超解像処理、アーカイブ展開、サ�
 from __future__ import annotations
 
 import argparse
-import ctypes
 import json
 import os
 import queue
@@ -32,10 +31,10 @@ import tempfile
 import threading
 import time
 import traceback
-from collections import OrderedDict, deque
+from collections import OrderedDict
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import TypeAlias
 
 from archive_utils import (
     archive_member_output_path as build_archive_member_output_path,
@@ -61,8 +60,78 @@ from archive_utils import (
 from archive_utils import (
     find_7z as find_7z_command,
 )
+from config import (
+    ACTION_DEFS,
+    APP_DIR,
+    APP_ICON_ICO,
+    APP_ICON_PNG,
+    APP_NAME,
+    APP_SHORT_NAME,
+    ARCHIVE_EXTENSIONS,
+    BORDERLESS_FULLSCREEN_OVERSCAN,
+    BUNDLED_REALCUGAN_EXE,
+    BUNDLED_REALESRGAN_EXE,
+    CONFIG_PATH,
+    DEFAULT_BACKGROUND_COLOR,
+    DEFAULT_REALCUGAN_TEMPLATE,
+    DEFAULT_REALESRGAN_TEMPLATE,
+    DIALOG_ACCEPT_TEXT,
+    ENABLE_COMPARE_MODE,
+    ENGINE_LABELS,
+    ENGINE_REALCUGAN,
+    ENGINE_REALESRGAN,
+    FORM_LABEL_WIDTH,
+    IMAGE_EXTENSIONS,
+    MAX_ENGINE_RETRY_COUNT,
+    MAX_THUMBNAIL_WORKER_COUNT,
+    PREFETCH_DEBOUNCE_MS,
+    PROFILE_UPDATE_INTERVAL_MS,
+    REALESRGAN_FIXED_SCALE,
+    REALESRGAN_MODELS,
+    RESAMPLE_ALGORITHMS,
+    SETTINGS_TABS,
+    SIDE_PANEL_HIDE_DELAY_MS,
+    SIDE_PANEL_HIDE_GRACE_SEC,
+    SIDE_PANEL_HIDE_MARGIN,
+    SIDE_PANEL_POSITIONS,
+    SORT_MODES,
+    TEMP_ARCHIVE_PREFIX,
+    TEMP_LOCK_FILE,
+    TEMP_OUTPUT_PREFIX,
+    TEMP_WORK_PREFIX,
+    THUMBNAIL_HIDE_DELAY_MS,
+    THUMBNAIL_HIDE_GRACE_SEC,
+    THUMBNAIL_HIDE_MARGIN,
+    THUMBNAIL_MAX_HEIGHT,
+    THUMBNAIL_MIN_HEIGHT,
+    THUMBNAIL_RESIZE_GRIP,
+    AppConfig,
+    ArchiveDisplayMap,
+    BindingValue,
+    CompareConfigDomain,
+    EngineConfigDomain,
+    ProcessingKey,
+    UiConfigDomain,
+    ViewerConfigDomain,
+    coerce_float,
+    coerce_int,
+    command_executable_exists,
+    default_key_bindings,
+    duplicate_binding_signatures,
+    enable_high_dpi_awareness,
+    key_binding_text,
+    keyboard_signature,
+    load_config,
+    modifier_value,
+    mouse_binding_text,
+    mouse_signature,
+    normalize_key_bindings,
+    save_config,
+    set_process_app_user_model_id,
+)
 from exceptions import ArchiveError
 from helpers import archive_display_name, cleanup_stale_temp_entries, format_command_template, sort_images, split_command_line
+from keybinding_dialog import KeyBindingDialog
 from logging_utils import (
     LOG_LEVEL_ERROR,
     LOG_LEVEL_INFO,
@@ -70,14 +139,25 @@ from logging_utils import (
     LOG_LEVEL_WARN,
     LOG_LEVELS,
     can_emit_log,
-    sanitize_log_level,
 )
-from renderer_utils import compose_side_by_side_images, iter_difference_points
+from renderer_utils import compose_side_by_side_images
 from ui_text import translate_binding_text, translate_state_text, translate_ui_text
+from viewer import AppSignals, GLImageView
 
 try:
-    from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QSize, Qt, QTimer, Signal
-    from PySide6.QtGui import QColor, QCloseEvent, QCursor, QDragLeaveEvent, QIcon, QImage, QImageReader, QKeyEvent, QKeySequence, QMouseEvent, QPaintEvent, QPainter, QPen, QPixmap, QResizeEvent, QTransform
+    from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QSize, Qt, QTimer
+    from PySide6.QtGui import (
+        QCloseEvent,
+        QColor,
+        QCursor,
+        QDragLeaveEvent,
+        QIcon,
+        QImage,
+        QImageReader,
+        QKeyEvent,
+        QPixmap,
+        QResizeEvent,
+    )
     from PySide6.QtWidgets import (
         QAbstractItemView,
         QApplication,
@@ -99,6 +179,7 @@ try:
         QMainWindow,
         QMessageBox,
         QProgressBar,
+        QProgressDialog,
         QPushButton,
         QScrollArea,
         QSizePolicy,
@@ -114,16 +195,6 @@ except ImportError as exc:
     raise SystemExit(
         "PySide6 が見つかりません。install_support.bat を実行してください。"
     ) from exc
-
-USE_OPENGL_VIEW = os.environ.get("RAIV_USE_OPENGL", "").strip().lower() in {"1", "true", "yes", "on"}
-ImageViewBaseWidget = QWidget
-if USE_OPENGL_VIEW:
-    try:
-        from PySide6.QtOpenGLWidgets import QOpenGLWidget
-
-        ImageViewBaseWidget = QOpenGLWidget
-    except Exception:
-        ImageViewBaseWidget = QWidget
 
 try:
     import rarfile
@@ -150,234 +221,15 @@ try:
 except ImportError:
     np = None
 
+try:
+    from PySide6.QtPdf import QPdfDocument
+except ImportError:
+    QPdfDocument = None
 
-APP_NAME = "Realtime AI Image Viewer"
-APP_SHORT_NAME = "RAIV"
-APP_ID = "RealtimeAIImageViewer.RAIV"
-APP_DIR = Path(__file__).resolve().parent
-CONFIG_PATH = APP_DIR / "setting.json"
-CONFIG_BACKUP_PATH = APP_DIR / "setting.json.bak"
-APP_ICON_ICO = APP_DIR / "assets" / "app_icon.ico"
-APP_ICON_PNG = APP_DIR / "assets" / "app_icon.png"
-REALESRGAN_FIXED_SCALE = 4
-BUNDLED_REALCUGAN_EXE = APP_DIR / "tools" / "realcugan-ncnn-vulkan" / "realcugan-ncnn-vulkan.exe"
-BUNDLED_REALESRGAN_EXE = APP_DIR / "tools" / "realesrgan-ncnn-vulkan" / "realesrgan-ncnn-vulkan.exe"
-LEGACY_REALCUGAN_TEMPLATE = 'realcugan-ncnn-vulkan.exe -i "{input}" -o "{output}" -s {scale} -n {denoise} -t {tile}'
-DEFAULT_REALCUGAN_TEMPLATE = (
-    f'"{BUNDLED_REALCUGAN_EXE}" -i "{{input}}" -o "{{output}}" -s {{scale}} -n {{denoise}} -t {{tile}}'
-    if BUNDLED_REALCUGAN_EXE.exists()
-    else LEGACY_REALCUGAN_TEMPLATE
-)
-LEGACY_REALESRGAN_TEMPLATE = 'realesrgan-ncnn-vulkan.exe -i "{input}" -o "{output}" -s {scale} -t {tile} -n {model}'
-DEFAULT_REALESRGAN_TEMPLATE = (
-    f'"{BUNDLED_REALESRGAN_EXE}" -i "{{input}}" -o "{{output}}" -s {{scale}} -t {{tile}} -n {{model}}'
-    if BUNDLED_REALESRGAN_EXE.exists()
-    else LEGACY_REALESRGAN_TEMPLATE
-)
-ENGINE_REALCUGAN = "realcugan"
-ENGINE_REALESRGAN = "realesrgan"
-ENGINE_LABELS = {
-    ENGINE_REALCUGAN: "Real-CUGAN",
-    ENGINE_REALESRGAN: "Real-ESRGAN",
-}
-REALESRGAN_MODELS = ["realesr-animevideov3", "realesrgan-x4plus", "realesrgan-x4plus-anime"]
-IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff", ".avif", ".heic", ".heif"}
-ARCHIVE_EXTENSIONS = {".zip", ".cbz", ".rar", ".cbr", ".7z", ".cb7"}
-TEMP_ARCHIVE_PREFIX = "realcugan_qt_archive_"
-TEMP_WORK_PREFIX = "realcugan_qt_work_"
-TEMP_OUTPUT_PREFIX = "realcugan_"
-TEMP_LOCK_FILE = "viewer.lock"
-BORDERLESS_FULLSCREEN_OVERSCAN = 1
-FORM_LABEL_WIDTH = 132
-MAX_DISPLAY_SCALE = 5.0
-PREFETCH_DEBOUNCE_MS = 80
-THUMBNAIL_TRIGGER_MARGIN = 48
-THUMBNAIL_MIN_HEIGHT = 96
-THUMBNAIL_MAX_HEIGHT = 320
-THUMBNAIL_RESIZE_GRIP = 10
-THUMBNAIL_HIDE_GRACE_SEC = 0.45
-THUMBNAIL_HIDE_MARGIN = 28
-THUMBNAIL_HIDE_DELAY_MS = 220
-SIDE_PANEL_HIDE_GRACE_SEC = 0.45
-SIDE_PANEL_HIDE_MARGIN = 36
-SIDE_PANEL_HIDE_DELAY_MS = 220
-SIDE_PANEL_POSITIONS = {
-    "right": "右",
-    "left": "左",
-    "top": "上",
-    "bottom": "下",
-}
-PROFILE_UPDATE_INTERVAL_MS = 500
-DEFAULT_ENGINE_RETRY_COUNT = 1
-MAX_ENGINE_RETRY_COUNT = 5
-DEFAULT_MAX_SAFE_IMAGE_PIXELS = 120_000_000
-DEFAULT_THUMBNAIL_WORKER_COUNT = 1
-MAX_THUMBNAIL_WORKER_COUNT = 4
-ENABLE_COMPARE_MODE = False
-DEFAULT_BACKGROUND_COLOR = "#000000"
-DIALOG_ACCEPT_TEXT = "OK"
-SETTINGS_TABS = ("realcugan", "general", "keyconfig")
-MODIFIER_LABELS = {
-    Qt.ControlModifier.value: "Ctrl",
-    Qt.ShiftModifier.value: "Shift",
-    Qt.AltModifier.value: "Alt",
-}
-SORT_MODES = {
-    "name": "Name",
-    "date": "Date",
-    "natural": "Natural",
-}
-RESAMPLE_ALGORITHMS = {
-    "lanczos3": "Lanczos3",
-    "lanczos4": "Lanczos4",
-    "bicubic": "Bicubic",
-    "area": "Area",
-}
-MODIFIER_MASK = (
-    Qt.ControlModifier.value
-    | Qt.ShiftModifier.value
-    | Qt.AltModifier.value
-)
-BindingValue: TypeAlias = dict[str, int | bool]
-BindingMap: TypeAlias = dict[str, dict[str, BindingValue | None]]
-ProcessingKey: TypeAlias = tuple[str, str, int, int, int, str]
-ArchiveDisplayMap: TypeAlias = dict[Path, str]
-
-ACTION_DEFS = [
-    ("open_image", "画像を開く"),
-    ("open_folder", "フォルダを開く"),
-    ("next_page", "次ページ送り"),
-    ("previous_page", "前ページ送り"),
-    ("last_page", "最終ページ飛ばし"),
-    ("first_page", "最初ページ飛ばし"),
-    ("toggle_fullscreen", "全画面表示/解除"),
-    ("toggle_thumbnail_panel", "サムネイル固定/自動表示"),
-    ("toggle_side_panel", "設定パネル固定/自動表示"),
-    ("actual_size", "等倍表示"),
-    ("fit_view", "画面フィット表示"),
-    ("rotate_right", "画像右回転"),
-    ("rotate_left", "画像左回転"),
-    ("flip_horizontal", "画像左右反転"),
-    ("flip_vertical", "画像上下反転"),
-]
-
-
-def key_binding(key: Qt.Key | int, modifiers: int = 0) -> dict[str, int]:
-    return {"key": int(key), "modifiers": int(modifiers) & MODIFIER_MASK}
-
-
-def mouse_binding(button: Qt.MouseButton | int, modifiers: int = 0, double: bool = False) -> dict[str, int | bool]:
-    return {
-        "button": int(button.value if hasattr(button, "value") else button),
-        "modifiers": int(modifiers) & MODIFIER_MASK,
-        "double": bool(double),
-    }
-
-
-def default_key_bindings() -> BindingMap:
-    return {
-        "open_image": {"keyboard": key_binding(Qt.Key_O), "mouse": None},
-        "open_folder": {"keyboard": key_binding(Qt.Key_F), "mouse": None},
-        "next_page": {"keyboard": key_binding(Qt.Key_Left), "mouse": None},
-        "previous_page": {"keyboard": key_binding(Qt.Key_Right), "mouse": None},
-        "last_page": {"keyboard": None, "mouse": mouse_binding(Qt.ForwardButton)},
-        "first_page": {"keyboard": None, "mouse": mouse_binding(Qt.BackButton)},
-        "toggle_fullscreen": {"keyboard": None, "mouse": mouse_binding(Qt.MiddleButton)},
-        "toggle_thumbnail_panel": {"keyboard": key_binding(Qt.Key_F3), "mouse": None},
-        "toggle_side_panel": {"keyboard": key_binding(Qt.Key_F4), "mouse": None},
-        "actual_size": {"keyboard": None, "mouse": mouse_binding(Qt.RightButton, double=True)},
-        "fit_view": {"keyboard": None, "mouse": mouse_binding(Qt.LeftButton, double=True)},
-        "rotate_right": {"keyboard": key_binding(Qt.Key_R), "mouse": None},
-        "rotate_left": {"keyboard": key_binding(Qt.Key_L), "mouse": None},
-        "flip_horizontal": {"keyboard": key_binding(Qt.Key_H), "mouse": None},
-        "flip_vertical": {"keyboard": key_binding(Qt.Key_V), "mouse": None},
-    }
-
-
-@dataclass
-class EngineConfigDomain:
-    engine: str = ENGINE_REALCUGAN
-    command_template: str = DEFAULT_REALCUGAN_TEMPLATE
-    realcugan_command_template: str = DEFAULT_REALCUGAN_TEMPLATE
-    realesrgan_command_template: str = DEFAULT_REALESRGAN_TEMPLATE
-    scale: int = 2
-    denoise: int = 0
-    tile: int = 0
-    engine_retry_count: int = DEFAULT_ENGINE_RETRY_COUNT
-    realesrgan_model: str = "realesr-animevideov3"
-    realcugan_prefetch_count: int = 10
-    save_upscaled_to_scale_folder: bool = False
-    use_scale_folder_cache: bool = True
-    skip_realcugan_for_tall_images: bool = True
-    skip_realcugan_height_threshold: int = 2160
-    engine_presets: dict[str, dict[str, object]] = field(default_factory=dict)
-
-
-@dataclass
-class ViewerConfigDomain:
-    viewer_prefetch_count: int = 20
-    thumbnail_worker_count: int = DEFAULT_THUMBNAIL_WORKER_COUNT
-    sort_mode: str = "name"
-    recent_dirs: list[str] = field(default_factory=list)
-    bookmarks: list[str] = field(default_factory=list)
-    favorites: list[str] = field(default_factory=list)
-    slideshow_enabled: bool = False
-    slideshow_interval_sec: int = 3
-    slideshow_pause_if_processing: bool = True
-    spread_mode_enabled: bool = False
-    exif_auto_orient: bool = True
-    cpu_resample_cache_enabled: bool = True
-    cpu_resample_algorithm: str = "lanczos3"
-    thumbnail_enabled: bool = True
-    thumbnail_pinned: bool = False
-    thumbnail_size: int = 96
-    thumbnail_height: int = 142
-    horizontal_wheel_navigation: bool = False
-    horizontal_wheel_inverted: bool = False
-    wrap_page_navigation: bool = False
-    preserve_view_on_page_navigation: bool = False
-    invert_page_position_slider: bool = True
-    page_scroll_interval_ms: int = 1
-    page_jump_value: int = 1
-    max_safe_image_pixels: int = DEFAULT_MAX_SAFE_IMAGE_PIXELS
-
-
-@dataclass
-class CompareConfigDomain:
-    compare_enabled: bool = False
-    compare_split: int = 500
-    compare_line_color: str = "#ffffff"
-    compare_line_width: int = 2
-    compare_swap_sides: bool = False
-    compare_shift_drag_moves_boundary: bool = False
-    compare_diff_highlight: bool = False
-    compare_diff_threshold: int = 24
-
-
-@dataclass
-class UiConfigDomain:
-    background_color: str = "#000000"
-    zoom_label_precision: int = 0
-    hide_cursor_in_fullscreen: bool = False
-    show_log_panel: bool = False
-    log_level: str = LOG_LEVEL_INFO
-    show_profile_panel: bool = False
-    ui_language: str = "ja"
-    arrow_right_next: bool = True
-    key_bindings: BindingMap = field(default_factory=default_key_bindings)
-    cleanup_temp_on_start: bool = False
-    settings_tab: str = "realcugan"
-    window_rect: list[int] | None = None
-    window_maximized: bool = False
-    window_geometry: str = ""
-    side_panel_visible: bool = True
-    side_panel_pinned: bool = True
-    side_panel_width: int = 460
-    side_panel_position: str = "right"
-    side_panel_detached: bool = False
-    side_panel_window_rect: list[int] | None = None
-    splitter_sizes: list[int] | None = None
-    last_dir: str = ""
+try:
+    from PySide6.QtPdf import QPdfDocument
+except ImportError:
+    QPdfDocument = None
 
 
 @dataclass
@@ -410,1276 +262,46 @@ class UiRuntimeState:
     closing: bool = False
 
 
-@dataclass
-class AppConfig:
-    engine: str = ENGINE_REALCUGAN
-    command_template: str = DEFAULT_REALCUGAN_TEMPLATE
-    realcugan_command_template: str = DEFAULT_REALCUGAN_TEMPLATE
-    realesrgan_command_template: str = DEFAULT_REALESRGAN_TEMPLATE
-    scale: int = 2
-    denoise: int = 0
-    tile: int = 0
-    engine_retry_count: int = DEFAULT_ENGINE_RETRY_COUNT
-    realesrgan_model: str = "realesr-animevideov3"
-    realcugan_prefetch_count: int = 10
-    viewer_prefetch_count: int = 20
-    thumbnail_worker_count: int = DEFAULT_THUMBNAIL_WORKER_COUNT
-    sort_mode: str = "name"
-    recent_dirs: list[str] = field(default_factory=list)
-    bookmarks: list[str] = field(default_factory=list)
-    favorites: list[str] = field(default_factory=list)
-    slideshow_enabled: bool = False
-    slideshow_interval_sec: int = 3
-    slideshow_pause_if_processing: bool = True
-    spread_mode_enabled: bool = False
-    exif_auto_orient: bool = True
-    engine_presets: dict[str, dict[str, object]] = field(default_factory=dict)
-    save_upscaled_to_scale_folder: bool = False
-    use_scale_folder_cache: bool = True
-    skip_realcugan_for_tall_images: bool = True
-    skip_realcugan_height_threshold: int = 2160
-    background_color: str = "#000000"
-    cpu_resample_cache_enabled: bool = True
-    cpu_resample_algorithm: str = "lanczos3"
-    compare_enabled: bool = False
-    compare_split: int = 500
-    compare_line_color: str = "#ffffff"
-    compare_line_width: int = 2
-    compare_swap_sides: bool = False
-    compare_shift_drag_moves_boundary: bool = False
-    compare_diff_highlight: bool = False
-    compare_diff_threshold: int = 24
-    zoom_label_precision: int = 0
-    hide_cursor_in_fullscreen: bool = False
-    show_log_panel: bool = False
-    log_level: str = LOG_LEVEL_INFO
-    show_profile_panel: bool = False
-    ui_language: str = "ja"
-    thumbnail_enabled: bool = True
-    thumbnail_pinned: bool = False
-    thumbnail_size: int = 96
-    thumbnail_height: int = 142
-    horizontal_wheel_navigation: bool = False
-    horizontal_wheel_inverted: bool = False
-    wrap_page_navigation: bool = False
-    preserve_view_on_page_navigation: bool = False
-    invert_page_position_slider: bool = True
-    page_scroll_interval_ms: int = 1
-    arrow_right_next: bool = True
-    key_bindings: BindingMap = field(default_factory=default_key_bindings)
-    cleanup_temp_on_start: bool = False
-    settings_tab: str = "realcugan"
-    window_rect: list[int] | None = None
-    window_maximized: bool = False
-    window_geometry: str = ""
-    side_panel_visible: bool = True
-    side_panel_pinned: bool = True
-    side_panel_width: int = 460
-    side_panel_position: str = "right"
-    side_panel_detached: bool = False
-    side_panel_window_rect: list[int] | None = None
-    splitter_sizes: list[int] | None = None
-    last_dir: str = ""
-    page_jump_value: int = 1
-    max_safe_image_pixels: int = DEFAULT_MAX_SAFE_IMAGE_PIXELS
+def render_pdf_pages_to_images(
+    pdf_path: Path,
+    temp_dir: Path,
+    render_scale: float = 2.0,
+    progress_callback: Callable[[int, int], bool] | None = None,
+) -> tuple[list[Path], ArchiveDisplayMap]:
+    if QPdfDocument is None:
+        raise ArchiveError("PDF support is unavailable.")
+    document = QPdfDocument()
+    document.load(str(pdf_path))
+    if document.error() != QPdfDocument.Error.None_:
+        raise ArchiveError("PDF decoder error")
+    page_count = document.pageCount()
+    if page_count <= 0:
+        return [], {}
 
-    def engine_domain(self) -> EngineConfigDomain:
-        return EngineConfigDomain(
-            engine=self.engine,
-            command_template=self.command_template,
-            realcugan_command_template=self.realcugan_command_template,
-            realesrgan_command_template=self.realesrgan_command_template,
-            scale=self.scale,
-            denoise=self.denoise,
-            tile=self.tile,
-            engine_retry_count=self.engine_retry_count,
-            realesrgan_model=self.realesrgan_model,
-            realcugan_prefetch_count=self.realcugan_prefetch_count,
-            save_upscaled_to_scale_folder=self.save_upscaled_to_scale_folder,
-            use_scale_folder_cache=self.use_scale_folder_cache,
-            skip_realcugan_for_tall_images=self.skip_realcugan_for_tall_images,
-            skip_realcugan_height_threshold=self.skip_realcugan_height_threshold,
-            engine_presets=dict(self.engine_presets),
+    if progress_callback is not None and not progress_callback(0, page_count):
+        raise ArchiveError("PDF open cancelled")
+
+    images: list[Path] = []
+    names: ArchiveDisplayMap = {}
+    for page_index in range(page_count):
+        page_size = document.pagePointSize(page_index)
+        if page_size.width() <= 0 or page_size.height() <= 0:
+            raise ArchiveError(f"Invalid PDF page size at page {page_index + 1}")
+        target_size = QSize(
+            max(1, int(round(page_size.width() * render_scale))),
+            max(1, int(round(page_size.height() * render_scale))),
         )
-
-    def viewer_domain(self) -> ViewerConfigDomain:
-        return ViewerConfigDomain(
-            viewer_prefetch_count=self.viewer_prefetch_count,
-            thumbnail_worker_count=self.thumbnail_worker_count,
-            sort_mode=self.sort_mode,
-            recent_dirs=list(self.recent_dirs),
-            bookmarks=list(self.bookmarks),
-            favorites=list(self.favorites),
-            slideshow_enabled=self.slideshow_enabled,
-            slideshow_interval_sec=self.slideshow_interval_sec,
-            slideshow_pause_if_processing=self.slideshow_pause_if_processing,
-            spread_mode_enabled=self.spread_mode_enabled,
-            exif_auto_orient=self.exif_auto_orient,
-            cpu_resample_cache_enabled=self.cpu_resample_cache_enabled,
-            cpu_resample_algorithm=self.cpu_resample_algorithm,
-            thumbnail_enabled=self.thumbnail_enabled,
-            thumbnail_pinned=self.thumbnail_pinned,
-            thumbnail_size=self.thumbnail_size,
-            thumbnail_height=self.thumbnail_height,
-            horizontal_wheel_navigation=self.horizontal_wheel_navigation,
-            horizontal_wheel_inverted=self.horizontal_wheel_inverted,
-            wrap_page_navigation=self.wrap_page_navigation,
-            preserve_view_on_page_navigation=self.preserve_view_on_page_navigation,
-            invert_page_position_slider=self.invert_page_position_slider,
-            page_scroll_interval_ms=self.page_scroll_interval_ms,
-            page_jump_value=self.page_jump_value,
-            max_safe_image_pixels=self.max_safe_image_pixels,
-        )
-
-    def compare_domain(self) -> CompareConfigDomain:
-        return CompareConfigDomain(
-            compare_enabled=self.compare_enabled,
-            compare_split=self.compare_split,
-            compare_line_color=self.compare_line_color,
-            compare_line_width=self.compare_line_width,
-            compare_swap_sides=self.compare_swap_sides,
-            compare_shift_drag_moves_boundary=self.compare_shift_drag_moves_boundary,
-            compare_diff_highlight=self.compare_diff_highlight,
-            compare_diff_threshold=self.compare_diff_threshold,
-        )
-
-    def ui_domain(self) -> UiConfigDomain:
-        return UiConfigDomain(
-            background_color=self.background_color,
-            zoom_label_precision=self.zoom_label_precision,
-            hide_cursor_in_fullscreen=self.hide_cursor_in_fullscreen,
-            show_log_panel=self.show_log_panel,
-            log_level=self.log_level,
-            show_profile_panel=self.show_profile_panel,
-            ui_language=self.ui_language,
-            arrow_right_next=self.arrow_right_next,
-            key_bindings=normalize_key_bindings(self.key_bindings),
-            cleanup_temp_on_start=self.cleanup_temp_on_start,
-            settings_tab=self.settings_tab,
-            window_rect=list(self.window_rect) if self.window_rect is not None else None,
-            window_maximized=self.window_maximized,
-            window_geometry=self.window_geometry,
-            side_panel_visible=self.side_panel_visible,
-            side_panel_pinned=self.side_panel_pinned,
-            side_panel_width=self.side_panel_width,
-            side_panel_position=self.side_panel_position,
-            side_panel_detached=self.side_panel_detached,
-            side_panel_window_rect=list(self.side_panel_window_rect) if self.side_panel_window_rect is not None else None,
-            splitter_sizes=list(self.splitter_sizes) if self.splitter_sizes is not None else None,
-            last_dir=self.last_dir,
-        )
-
-    def apply_domains(
-        self,
-        engine: EngineConfigDomain | None = None,
-        viewer: ViewerConfigDomain | None = None,
-        compare: CompareConfigDomain | None = None,
-        ui: UiConfigDomain | None = None,
-    ) -> None:
-        if engine is not None:
-            self.engine = engine.engine
-            self.command_template = engine.command_template
-            self.realcugan_command_template = engine.realcugan_command_template
-            self.realesrgan_command_template = engine.realesrgan_command_template
-            self.scale = engine.scale
-            self.denoise = engine.denoise
-            self.tile = engine.tile
-            self.engine_retry_count = engine.engine_retry_count
-            self.realesrgan_model = engine.realesrgan_model
-            self.realcugan_prefetch_count = engine.realcugan_prefetch_count
-            self.save_upscaled_to_scale_folder = engine.save_upscaled_to_scale_folder
-            self.use_scale_folder_cache = engine.use_scale_folder_cache
-            self.skip_realcugan_for_tall_images = engine.skip_realcugan_for_tall_images
-            self.skip_realcugan_height_threshold = engine.skip_realcugan_height_threshold
-            self.engine_presets = dict(engine.engine_presets)
-        if viewer is not None:
-            self.viewer_prefetch_count = viewer.viewer_prefetch_count
-            self.thumbnail_worker_count = viewer.thumbnail_worker_count
-            self.sort_mode = viewer.sort_mode
-            self.recent_dirs = list(viewer.recent_dirs)
-            self.bookmarks = list(viewer.bookmarks)
-            self.favorites = list(viewer.favorites)
-            self.slideshow_enabled = viewer.slideshow_enabled
-            self.slideshow_interval_sec = viewer.slideshow_interval_sec
-            self.slideshow_pause_if_processing = viewer.slideshow_pause_if_processing
-            self.spread_mode_enabled = viewer.spread_mode_enabled
-            self.exif_auto_orient = viewer.exif_auto_orient
-            self.cpu_resample_cache_enabled = viewer.cpu_resample_cache_enabled
-            self.cpu_resample_algorithm = viewer.cpu_resample_algorithm
-            self.thumbnail_enabled = viewer.thumbnail_enabled
-            self.thumbnail_pinned = viewer.thumbnail_pinned
-            self.thumbnail_size = viewer.thumbnail_size
-            self.thumbnail_height = viewer.thumbnail_height
-            self.horizontal_wheel_navigation = viewer.horizontal_wheel_navigation
-            self.horizontal_wheel_inverted = viewer.horizontal_wheel_inverted
-            self.wrap_page_navigation = viewer.wrap_page_navigation
-            self.preserve_view_on_page_navigation = viewer.preserve_view_on_page_navigation
-            self.invert_page_position_slider = viewer.invert_page_position_slider
-            self.page_scroll_interval_ms = viewer.page_scroll_interval_ms
-            self.page_jump_value = viewer.page_jump_value
-            self.max_safe_image_pixels = viewer.max_safe_image_pixels
-        if compare is not None:
-            self.compare_enabled = compare.compare_enabled
-            self.compare_split = compare.compare_split
-            self.compare_line_color = compare.compare_line_color
-            self.compare_line_width = compare.compare_line_width
-            self.compare_swap_sides = compare.compare_swap_sides
-            self.compare_shift_drag_moves_boundary = compare.compare_shift_drag_moves_boundary
-            self.compare_diff_highlight = compare.compare_diff_highlight
-            self.compare_diff_threshold = compare.compare_diff_threshold
-        if ui is not None:
-            self.background_color = ui.background_color
-            self.zoom_label_precision = ui.zoom_label_precision
-            self.hide_cursor_in_fullscreen = ui.hide_cursor_in_fullscreen
-            self.show_log_panel = ui.show_log_panel
-            self.log_level = ui.log_level
-            self.show_profile_panel = ui.show_profile_panel
-            self.ui_language = ui.ui_language
-            self.arrow_right_next = ui.arrow_right_next
-            self.key_bindings = normalize_key_bindings(ui.key_bindings)
-            self.cleanup_temp_on_start = ui.cleanup_temp_on_start
-            self.settings_tab = ui.settings_tab
-            self.window_rect = list(ui.window_rect) if ui.window_rect is not None else None
-            self.window_maximized = ui.window_maximized
-            self.window_geometry = ui.window_geometry
-            self.side_panel_visible = ui.side_panel_visible
-            self.side_panel_pinned = ui.side_panel_pinned
-            self.side_panel_width = ui.side_panel_width
-            self.side_panel_position = ui.side_panel_position if ui.side_panel_position in SIDE_PANEL_POSITIONS else "right"
-            self.side_panel_detached = bool(ui.side_panel_detached)
-            self.side_panel_window_rect = list(ui.side_panel_window_rect) if ui.side_panel_window_rect is not None else None
-            self.splitter_sizes = list(ui.splitter_sizes) if ui.splitter_sizes is not None else None
-            self.last_dir = ui.last_dir
-
-
-def set_process_app_user_model_id() -> None:
-    if os.name != "nt":
-        return
-    try:
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)
-    except Exception:
-        pass
-
-
-def enable_high_dpi_awareness() -> None:
-    if os.name != "nt":
-        return
-    try:
-        if ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4)):
-            return
-    except Exception:
-        pass
-    try:
-        ctypes.windll.shcore.SetProcessDpiAwareness(2)
-        return
-    except Exception:
-        pass
-    try:
-        ctypes.windll.user32.SetProcessDPIAware()
-    except Exception:
-        pass
-
-
-def command_executable_exists(command: str) -> bool:
-    stripped = command.strip()
-    if not stripped:
-        return False
-    if stripped.startswith('"'):
-        end = stripped.find('"', 1)
-        token = stripped[1:end] if end > 1 else ""
-    else:
-        token = stripped.split(maxsplit=1)[0]
-    if not token:
-        return False
-    exe_path = Path(os.path.expandvars(token))
-    if exe_path.is_absolute():
-        return exe_path.is_file()
-    return (APP_DIR / exe_path).is_file() or shutil.which(token) is not None
-
-
-def normalize_key_bindings(value: object) -> BindingMap:
-    defaults = default_key_bindings()
-    if not isinstance(value, dict):
-        return defaults
-    normalized = defaults
-    for action_id, parts in value.items():
-        if action_id not in normalized or not isinstance(parts, dict):
-            continue
-        for kind in ("keyboard", "mouse"):
-            binding = parts.get(kind)
-            if binding is None:
-                normalized[action_id][kind] = None
-                continue
-            if not isinstance(binding, dict):
-                continue
-            if kind == "keyboard":
-                key = binding.get("key")
-                if isinstance(key, int) and key > 0:
-                    normalized[action_id][kind] = {
-                        "key": key,
-                        "modifiers": int(binding.get("modifiers", 0)) & MODIFIER_MASK,
-                    }
-            else:
-                button = binding.get("button")
-                if isinstance(button, int) and button > 0:
-                    normalized[action_id][kind] = {
-                        "button": button,
-                        "modifiers": int(binding.get("modifiers", 0)) & MODIFIER_MASK,
-                        "double": bool(binding.get("double", False)),
-                    }
-    return normalized
-
-
-def normalize_loaded_config_fields(config: AppConfig) -> AppConfig:
-    if config.engine not in ENGINE_LABELS:
-        config.engine = ENGINE_REALCUGAN
-    if config.realesrgan_model not in REALESRGAN_MODELS:
-        config.realesrgan_model = REALESRGAN_MODELS[0]
-    if config.cpu_resample_algorithm not in RESAMPLE_ALGORITHMS:
-        config.cpu_resample_algorithm = "lanczos3"
-    if config.ui_language not in {"ja", "en"}:
-        config.ui_language = "ja"
-    config.log_level = sanitize_log_level(config.log_level)
-    config.zoom_label_precision = max(0, min(3, int(getattr(config, "zoom_label_precision", 0))))
-    config.page_jump_value = max(1, int(getattr(config, "page_jump_value", 1)))
-    if config.sort_mode not in SORT_MODES:
-        config.sort_mode = "name"
-    config.thumbnail_worker_count = max(1, min(MAX_THUMBNAIL_WORKER_COUNT, int(getattr(config, "thumbnail_worker_count", DEFAULT_THUMBNAIL_WORKER_COUNT))))
-    if not isinstance(config.recent_dirs, list):
-        config.recent_dirs = []
-    config.recent_dirs = [str(item) for item in config.recent_dirs if isinstance(item, str) and item.strip()][:10]
-    if not isinstance(config.bookmarks, list):
-        config.bookmarks = []
-    config.bookmarks = [str(item) for item in config.bookmarks if isinstance(item, str) and item.strip()]
-    if not isinstance(config.favorites, list):
-        config.favorites = []
-    config.favorites = [str(item) for item in config.favorites if isinstance(item, str) and item.strip()]
-    config.slideshow_enabled = bool(getattr(config, "slideshow_enabled", False))
-    config.slideshow_interval_sec = max(1, min(30, int(getattr(config, "slideshow_interval_sec", 3))))
-    config.slideshow_pause_if_processing = bool(getattr(config, "slideshow_pause_if_processing", True))
-    config.spread_mode_enabled = bool(getattr(config, "spread_mode_enabled", False))
-    config.exif_auto_orient = bool(getattr(config, "exif_auto_orient", True))
-    if not isinstance(config.engine_presets, dict):
-        config.engine_presets = {}
-    config.engine_retry_count = max(0, min(MAX_ENGINE_RETRY_COUNT, int(getattr(config, "engine_retry_count", DEFAULT_ENGINE_RETRY_COUNT))))
-    config.compare_diff_highlight = bool(getattr(config, "compare_diff_highlight", False))
-    config.compare_diff_threshold = max(0, min(255, int(getattr(config, "compare_diff_threshold", 24))))
-    config.max_safe_image_pixels = max(1_000_000, int(getattr(config, "max_safe_image_pixels", DEFAULT_MAX_SAFE_IMAGE_PIXELS)))
-    config.key_bindings = normalize_key_bindings(getattr(config, "key_bindings", None))
-    return config
-
-
-def postprocess_loaded_config(config: AppConfig, data: dict[str, object]) -> AppConfig:
-    if config.command_template == LEGACY_REALCUGAN_TEMPLATE and BUNDLED_REALCUGAN_EXE.exists():
-        config.command_template = DEFAULT_REALCUGAN_TEMPLATE
-    if config.realcugan_command_template in {LEGACY_REALCUGAN_TEMPLATE, ""} and BUNDLED_REALCUGAN_EXE.exists():
-        config.realcugan_command_template = DEFAULT_REALCUGAN_TEMPLATE
-    if config.realesrgan_command_template in {LEGACY_REALESRGAN_TEMPLATE, ""} and BUNDLED_REALESRGAN_EXE.exists():
-        config.realesrgan_command_template = DEFAULT_REALESRGAN_TEMPLATE
-    if "realcugan_command_template" not in data:
-        config.realcugan_command_template = config.command_template or DEFAULT_REALCUGAN_TEMPLATE
-    config = normalize_loaded_config_fields(config)
-    if BUNDLED_REALCUGAN_EXE.exists() and not command_executable_exists(config.realcugan_command_template):
-        config.realcugan_command_template = DEFAULT_REALCUGAN_TEMPLATE
-    if BUNDLED_REALESRGAN_EXE.exists() and not command_executable_exists(config.realesrgan_command_template):
-        config.realesrgan_command_template = DEFAULT_REALESRGAN_TEMPLATE
-    compare_split_value = data.get("compare_split", 500)
-    if isinstance(compare_split_value, int) and not isinstance(compare_split_value, bool) and 0 <= compare_split_value <= 100:
-        config.compare_split = compare_split_value * 10
-    return config
-
-
-def load_config() -> AppConfig:
-    if not CONFIG_PATH.exists():
-        return AppConfig()
-    try:
-        data = json.loads(CONFIG_PATH.read_text(encoding="utf-8-sig"))
-        config = AppConfig(**{**asdict(AppConfig()), **data})
-        return postprocess_loaded_config(config, data)
-    except Exception:
-        try:
-            timestamp = time.strftime("%Y%m%d-%H%M%S")
-            broken = APP_DIR / f"setting.json.corrupt.{timestamp}"
-            if CONFIG_PATH.exists():
-                CONFIG_PATH.replace(broken)
-        except Exception:
-            pass
-        try:
-            if CONFIG_BACKUP_PATH.exists():
-                CONFIG_PATH.write_text(CONFIG_BACKUP_PATH.read_text(encoding="utf-8-sig"), encoding="utf-8")
-                data = json.loads(CONFIG_PATH.read_text(encoding="utf-8-sig"))
-                config = AppConfig(**{**asdict(AppConfig()), **data})
-                return postprocess_loaded_config(config, data)
-        except Exception:
-            pass
-        return AppConfig()
-
-
-def save_config(config: AppConfig) -> None:
-    payload = json.dumps(asdict(config), ensure_ascii=False, indent=2)
-    try:
-        if CONFIG_PATH.exists():
-            shutil.copy2(CONFIG_PATH, CONFIG_BACKUP_PATH)
-    except Exception:
-        pass
-    temp_path = APP_DIR / "setting.json.tmp"
-    temp_path.write_text(payload, encoding="utf-8")
-    temp_path.replace(CONFIG_PATH)
-
-
-def modifier_value(modifiers) -> int:
-    return int(modifiers.value if hasattr(modifiers, "value") else modifiers) & MODIFIER_MASK
-
-
-def coerce_int(value: object, default: int) -> int:
-    if isinstance(value, bool):
-        return default
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float):
-        return int(value)
-    if isinstance(value, str):
-        try:
-            return int(value)
-        except ValueError:
-            return default
-    return default
-
-
-def coerce_float(value: object, default: float) -> float:
-    if isinstance(value, bool):
-        return default
-    if isinstance(value, (int, float)):
-        return float(value)
-    if isinstance(value, str):
-        try:
-            return float(value)
-        except ValueError:
-            return default
-    return default
-
-
-def binding_modifiers_text(modifiers: int) -> list[str]:
-    names = []
-    for modifier, label in MODIFIER_LABELS.items():
-        if modifiers & modifier:
-            names.append(label)
-    return names
-
-
-def key_binding_text(binding: BindingValue | None) -> str:
-    if not binding:
-        return "未割当"
-    parts = binding_modifiers_text(int(binding.get("modifiers", 0)))
-    key = int(binding.get("key", 0))
-    key_text = QKeySequence(key).toString(QKeySequence.NativeText) if key else ""
-    parts.append(key_text or f"Key {key}")
-    return "+".join(parts)
-
-
-def mouse_binding_text(binding: BindingValue | None) -> str:
-    if not binding:
-        return "未割当"
-    parts = binding_modifiers_text(int(binding.get("modifiers", 0)))
-    button = int(binding.get("button", 0))
-    names = {
-        Qt.LeftButton.value: "左クリック",
-        Qt.RightButton.value: "右クリック",
-        Qt.MiddleButton.value: "ホイールクリック",
-        Qt.BackButton.value: "戻るボタン",
-        Qt.ForwardButton.value: "進むボタン",
-    }
-    button_text = names.get(button, f"ボタン{button}")
-    if binding.get("double"):
-        button_text = button_text.replace("クリック", "ダブルクリック")
-        if "ダブルクリック" not in button_text:
-            button_text = f"{button_text}ダブルクリック"
-    parts.append(button_text)
-    return "+".join(parts)
-
-
-def keyboard_signature(binding: BindingValue | None) -> tuple[int, int] | None:
-    if not binding:
-        return None
-    key = int(binding.get("key", 0))
-    if key <= 0:
-        return None
-    return key, int(binding.get("modifiers", 0)) & MODIFIER_MASK
-
-
-def mouse_signature(binding: BindingValue | None) -> tuple[int, int, bool] | None:
-    if not binding:
-        return None
-    button = int(binding.get("button", 0))
-    if button <= 0:
-        return None
-    return button, int(binding.get("modifiers", 0)) & MODIFIER_MASK, bool(binding.get("double", False))
-
-
-def duplicate_binding_signatures(bindings: BindingMap, kind: str) -> set[tuple]:
-    seen: dict[tuple, str] = {}
-    duplicates: set[tuple] = set()
-    if kind == "keyboard":
-        # Space/Backspace are fixed operations, so configurable bindings cannot use them.
-        seen[(int(Qt.Key_Space), 0)] = "__fixed_space__"
-        seen[(int(Qt.Key_Backspace), 0)] = "__fixed_backspace__"
-        signature_func = keyboard_signature
-    else:
-        signature_func = mouse_signature
-    for action_id, action_bindings in bindings.items():
-        if not isinstance(action_bindings, dict):
-            continue
-        signature = signature_func(action_bindings.get(kind))
-        if signature is None:
-            continue
-        if signature in seen:
-            duplicates.add(signature)
-        else:
-            seen[signature] = action_id
-    return duplicates
-
-
-class KeyBindingDialog(QDialog):
-    def __init__(self, parent: QWidget, title: str, kind: str, binding: BindingValue | None) -> None:
-        super().__init__(parent)
-        self.kind = kind
-        self.binding = dict(binding) if binding else None
-        self.capturing = False
-        self.language = parent.ui_language() if hasattr(parent, "ui_language") else "ja"
-        self.setWindowTitle(title)
-        layout = QVBoxLayout(self)
-        self.capture_button = QPushButton(self.dialog_text("ここをクリック後、設定するキーを押下" if kind == "keyboard" else "ここをクリック後、設定するマウスボタンを押下"))
-        self.capture_button.clicked.connect(self.start_capture)
-        layout.addWidget(self.capture_button)
-        mods = QHBoxLayout()
-        self.ctrl_check = QCheckBox(MODIFIER_LABELS[Qt.ControlModifier.value])
-        self.shift_check = QCheckBox(MODIFIER_LABELS[Qt.ShiftModifier.value])
-        self.alt_check = QCheckBox(MODIFIER_LABELS[Qt.AltModifier.value])
-        for checkbox in (self.ctrl_check, self.shift_check, self.alt_check):
-            checkbox.stateChanged.connect(self.on_option_changed)
-            mods.addWidget(checkbox)
-        mods.addStretch(1)
-        layout.addLayout(mods)
-        self.double_check = QCheckBox(self.dialog_text("ダブルクリック"))
-        self.double_check.stateChanged.connect(self.on_option_changed)
-        if kind == "mouse":
-            layout.addWidget(self.double_check)
-        self.preview_label = QLabel()
-        layout.addWidget(self.preview_label)
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.button(QDialogButtonBox.Ok).setText(DIALOG_ACCEPT_TEXT)
-        buttons.button(QDialogButtonBox.Cancel).setText(self.dialog_text("キャンセル"))
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-        self.load_binding(binding)
-
-    def dialog_text(self, text: str) -> str:
-        return translate_ui_text(text, self.language)
-
-    def load_binding(self, binding: BindingValue | None) -> None:
-        modifiers = int(binding.get("modifiers", 0)) if binding else 0
-        self.ctrl_check.setChecked(bool(modifiers & Qt.ControlModifier.value))
-        self.shift_check.setChecked(bool(modifiers & Qt.ShiftModifier.value))
-        self.alt_check.setChecked(bool(modifiers & Qt.AltModifier.value))
-        if self.kind == "mouse":
-            self.double_check.setChecked(bool(binding.get("double", False)) if binding else False)
-        self.update_preview()
-
-    def selected_modifiers(self) -> int:
-        modifiers = 0
-        if self.ctrl_check.isChecked():
-            modifiers |= Qt.ControlModifier.value
-        if self.shift_check.isChecked():
-            modifiers |= Qt.ShiftModifier.value
-        if self.alt_check.isChecked():
-            modifiers |= Qt.AltModifier.value
-        return modifiers
-
-    def start_capture(self) -> None:
-        self.capturing = True
-        self.capture_button.setText(self.dialog_text("入力待ち... Escで解除"))
-        self.capture_button.setFocus()
-        if self.kind == "keyboard":
-            self.grabKeyboard()
-        else:
-            self.grabMouse()
-
-    def on_option_changed(self) -> None:
-        if self.binding:
-            self.binding["modifiers"] = self.selected_modifiers()
-            if self.kind == "mouse":
-                self.binding["double"] = self.double_check.isChecked()
-        self.update_preview()
-
-    def stop_capture(self) -> None:
-        if self.kind == "keyboard":
-            self.releaseKeyboard()
-        else:
-            self.releaseMouse()
-        self.capturing = False
-        self.capture_button.setText(self.dialog_text("ここをクリック後、設定するキーを押下" if self.kind == "keyboard" else "ここをクリック後、設定するマウスボタンを押下"))
-
-    def keyPressEvent(self, event: QKeyEvent) -> None:
-        if not self.capturing:
-            super().keyPressEvent(event)
-            return
-        key = event.key()
-        if key == Qt.Key_Escape:
-            self.binding = None
-        elif key not in {Qt.Key_Control, Qt.Key_Shift, Qt.Key_Alt, Qt.Key_Meta}:
-            self.binding = key_binding(key, self.selected_modifiers())
-        self.stop_capture()
-        self.update_preview()
-
-    def mousePressEvent(self, event: QMouseEvent) -> None:
-        if not self.capturing or self.kind != "mouse":
-            super().mousePressEvent(event)
-            return
-        self.binding = mouse_binding(event.button(), self.selected_modifiers(), self.double_check.isChecked())
-        self.stop_capture()
-        self.update_preview()
-
-    def update_preview(self) -> None:
-        text = key_binding_text(self.binding) if self.kind == "keyboard" else mouse_binding_text(self.binding)
-        text = translate_binding_text(text, self.language)
-        self.preview_label.setText(f"{self.dialog_text('現在')}: {text}")
-
-
-class AppSignals(QObject):
-    process_started = Signal(str)
-    process_done = Signal(object)
-    folder_images_ready = Signal(object, object)
-    prefetch_done = Signal(int, object, object, object, object)
-    thumbnail_done = Signal(int, int, object)
-    profile_event = Signal(str, float)
-
-
-class GLImageView(ImageViewBaseWidget):
-    pageRequested = Signal(int)
-    firstRequested = Signal()
-    lastRequested = Signal()
-    zoomChanged = Signal(float)
-    splitChanged = Signal(int)
-    fullscreenRequested = Signal()
-    resetRequested = Signal()
-    actualSizeRequested = Signal()
-    actionRequested = Signal(str)
-    emptyAreaClicked = Signal()
-    pixmapPrefetchProgress = Signal(int, int, int, float)
-
-    def __init__(self, parent=None) -> None:
-        super().__init__(parent)
-        self.setAcceptDrops(True)
-        self.setMouseTracking(True)
-        self.setFocusPolicy(Qt.StrongFocus)
-        self.background = QColor(DEFAULT_BACKGROUND_COLOR)
-        self.raw_source_image = QImage()
-        self.raw_processed_image = QImage()
-        self.source_image = QImage()
-        self.processed_image = QImage()
-        self.source_pixmap = QPixmap()
-        self.processed_pixmap = QPixmap()
-        self.display_rotation = 0
-        self.display_flip_horizontal = False
-        self.display_flip_vertical = False
-        self.key_bindings = default_key_bindings()
-        self.duplicate_mouse_bindings: set[tuple] = set()
-        self.resample_cache: OrderedDict[tuple[int, int, int, str], QPixmap] = OrderedDict()
-        self.pixmap_cache: OrderedDict[tuple[int, int, bool, bool], QPixmap] = OrderedDict()
-        self.pixmap_cache_limit = 128
-        self.pixmap_prefetch_queue: deque[tuple[object, QImage]] = deque()
-        self.pixmap_prefetch_keys: set[object] = set()
-        self.pixmap_prefetch_done_keys: set[object] = set()
-        self.pixmap_prefetch_timer = QTimer(self)
-        self.pixmap_prefetch_timer.setSingleShot(True)
-        self.pixmap_prefetch_timer.timeout.connect(self.process_pixmap_prefetch)
-        self.cpu_resample_cache_enabled = True
-        self.cpu_resample_algorithm = "lanczos3"
-        self.resample_debounce_timer = QTimer(self)
-        self.resample_debounce_timer.setSingleShot(True)
-        self.resample_debounce_timer.timeout.connect(self.finish_interactive_resample_delay)
-        self.repaint_coalesce_timer = QTimer(self)
-        self.repaint_coalesce_timer.setSingleShot(True)
-        self.repaint_coalesce_timer.timeout.connect(self.update)
-        self.resample_interaction_active = False
-        self.resample_debounce_ms = 180
-        self.compare_enabled = False
-        self.compare_split = 500
-        self.compare_line_color = QColor("#ffffff")
-        self.compare_line_width = 2
-        self.compare_swap_sides = False
-        self.compare_shift_drag_moves_boundary = False
-        self.compare_diff_highlight = False
-        self.compare_diff_threshold = 24
-        self.horizontal_wheel_navigation = False
-        self.horizontal_wheel_inverted = False
-        self.zoom = 1.0
-        self.offset = QPoint(0, 0)
-        self.pan_start: QPoint | None = None
-        self.zoom_drag_start: QPoint | None = None
-        self.fit_scale_anchor: float | None = None
-        self.fit_image_size: tuple[int, int] | None = None
-
-    def set_images(self, source: QImage, processed: QImage | None, preserve_view: bool = False) -> None:
-        preserved_scale = self.current_scale() if preserve_view and not self.current_display_image().isNull() else None
-        preserved_offset = QPoint(self.offset) if preserve_view else QPoint(0, 0)
-        preserved_rotation = self.display_rotation if preserve_view else 0
-        preserved_flip_horizontal = self.display_flip_horizontal if preserve_view else False
-        preserved_flip_vertical = self.display_flip_vertical if preserve_view else False
-        self.raw_source_image = source
-        self.raw_processed_image = processed or QImage()
-        self.display_rotation = preserved_rotation
-        self.display_flip_horizontal = preserved_flip_horizontal
-        self.display_flip_vertical = preserved_flip_vertical
-        self.rebuild_display_images()
-        self.clear_resample_cache()
-        if preserve_view and preserved_scale is not None:
-            image = self.current_display_image()
-            if not image.isNull() and self.width() > 0 and self.height() > 0:
-                self.fit_scale_anchor = min(self.width() / image.width(), self.height() / image.height())
-                self.fit_image_size = (image.width(), image.height())
-                self.zoom = self.clamp_zoom_factor(preserved_scale / max(self.fit_scale_anchor, 0.000001))
-                self.offset = preserved_offset
-                self.zoomChanged.emit(self.current_scale())
-            else:
-                self.reset_view(update=False)
-        else:
-            self.reset_view(update=False)
-        self.update()
-
-    def set_processed(self, processed: QImage | None) -> None:
-        self.raw_processed_image = processed or QImage()
-        self.rebuild_display_images()
-        self.clear_resample_cache()
-        self.update()
-
-    def set_key_bindings(self, bindings: BindingMap) -> None:
-        self.key_bindings = normalize_key_bindings(bindings)
-        self.duplicate_mouse_bindings = duplicate_binding_signatures(self.key_bindings, "mouse")
-
-    def transformed_image(self, image: QImage) -> QImage:
+        image = document.render(page_index, target_size)
         if image.isNull():
-            return QImage()
-        if self.display_rotation % 360 == 0 and not self.display_flip_horizontal and not self.display_flip_vertical:
-            return image
-        transform = QTransform()
-        transform.scale(-1 if self.display_flip_horizontal else 1, -1 if self.display_flip_vertical else 1)
-        transform.rotate(self.display_rotation)
-        return image.transformed(transform, Qt.SmoothTransformation)
-
-    def rebuild_display_images(self) -> None:
-        self.source_image = self.transformed_image(self.raw_source_image)
-        self.processed_image = self.transformed_image(self.raw_processed_image)
-        self.source_pixmap = self.pixmap_for_image(self.raw_source_image, self.source_image)
-        self.processed_pixmap = self.pixmap_for_image(self.raw_processed_image, self.processed_image)
-
-    def pixmap_for_image(self, raw_image: QImage, display_image: QImage) -> QPixmap:
-        if raw_image.isNull() or display_image.isNull():
-            return QPixmap()
-        key = self.pixmap_cache_key(raw_image)
-        cached = self.pixmap_cache.get(key)
-        if cached is not None:
-            self.pixmap_cache.move_to_end(key)
-            return cached
-        pixmap = QPixmap.fromImage(display_image)
-        self.pixmap_cache[key] = pixmap
-        while len(self.pixmap_cache) > self.pixmap_cache_limit:
-            self.pixmap_cache.popitem(last=False)
-        return pixmap
-
-    def pixmap_cache_key(self, raw_image: QImage) -> tuple[int, int, bool, bool]:
-        return (
-            int(raw_image.cacheKey()),
-            self.display_rotation % 360,
-            self.display_flip_horizontal,
-            self.display_flip_vertical,
-        )
-
-    def set_pixmap_cache_limit(self, limit: int) -> None:
-        self.pixmap_cache_limit = max(24, int(limit))
-        while len(self.pixmap_cache) > self.pixmap_cache_limit:
-            self.pixmap_cache.popitem(last=False)
-
-    def queue_pixmap_prefetch(self, items: list[tuple[object, QImage]]) -> None:
-        for stable_key, image in items:
-            if image.isNull():
-                continue
-            if stable_key in self.pixmap_prefetch_done_keys or stable_key in self.pixmap_prefetch_keys:
-                continue
-            self.pixmap_prefetch_queue.append((stable_key, image))
-            self.pixmap_prefetch_keys.add(stable_key)
-        if self.pixmap_prefetch_queue and not self.pixmap_prefetch_timer.isActive():
-            self.pixmap_prefetch_timer.start(1)
-
-    def clear_pixmap_prefetch_state(self) -> None:
-        self.pixmap_prefetch_queue.clear()
-        self.pixmap_prefetch_keys.clear()
-        self.pixmap_prefetch_done_keys.clear()
-        self.pixmap_prefetch_timer.stop()
-
-    def process_pixmap_prefetch(self) -> None:
-        started = time.perf_counter()
-        warmed = 0
-        budget = 1
-        while self.pixmap_prefetch_queue and warmed < budget:
-            stable_key, image = self.pixmap_prefetch_queue.popleft()
-            self.pixmap_prefetch_keys.discard(stable_key)
-            if image.isNull() or stable_key in self.pixmap_prefetch_done_keys:
-                continue
-            self.pixmap_for_image(image, self.transformed_image(image))
-            self.pixmap_prefetch_done_keys.add(stable_key)
-            warmed += 1
-        if warmed:
-            self.pixmapPrefetchProgress.emit(
-                warmed,
-                len(self.pixmap_prefetch_queue),
-                len(self.pixmap_cache),
-                (time.perf_counter() - started) * 1000,
-            )
-        if self.pixmap_prefetch_queue:
-            self.pixmap_prefetch_timer.start(1)
-
-    def rotate_display(self, degrees: int) -> None:
-        self.display_rotation = (self.display_rotation + degrees) % 360
-        self.rebuild_display_images()
-        self.optimize_pixmap_cache_for_transform()
-        self.clear_resample_cache()
-        self.reset_view(update=False)
-        self.update()
-
-    def flip_display(self, horizontal: bool) -> None:
-        if horizontal:
-            self.display_flip_horizontal = not self.display_flip_horizontal
-        else:
-            self.display_flip_vertical = not self.display_flip_vertical
-        self.rebuild_display_images()
-        self.optimize_pixmap_cache_for_transform()
-        self.clear_resample_cache()
-        self.update()
-
-    def optimize_pixmap_cache_for_transform(self) -> None:
-        rotation = self.display_rotation % 360
-        flip_h = self.display_flip_horizontal
-        flip_v = self.display_flip_vertical
-        filtered = OrderedDict(
-            (key, value)
-            for key, value in self.pixmap_cache.items()
-            if key[1] == rotation and key[2] == flip_h and key[3] == flip_v
-        )
-        if filtered:
-            self.pixmap_cache = filtered
-        if not self.raw_source_image.isNull():
-            self.source_pixmap = self.pixmap_for_image(self.raw_source_image, self.source_image)
-        if not self.raw_processed_image.isNull():
-            self.processed_pixmap = self.pixmap_for_image(self.raw_processed_image, self.processed_image)
-
-    def request_repaint(self, delay_ms: int = 0) -> None:
-        delay = max(0, int(delay_ms))
-        if self.repaint_coalesce_timer.isActive():
-            return
-        self.repaint_coalesce_timer.start(delay)
-
-    def set_background(self, color: str) -> None:
-        self.background = QColor(color)
-        self.update()
-
-    def set_compare(
-        self,
-        enabled: bool,
-        split: int,
-        line_color: str,
-        line_width: int,
-        swap_sides: bool,
-        shift_boundary: bool,
-        diff_highlight: bool = False,
-        diff_threshold: int = 24,
-    ) -> None:
-        self.compare_enabled = enabled
-        self.compare_split = int(split)
-        self.compare_line_color = QColor(line_color)
-        self.compare_line_width = int(line_width)
-        self.compare_swap_sides = bool(swap_sides)
-        self.compare_shift_drag_moves_boundary = bool(shift_boundary)
-        self.compare_diff_highlight = bool(diff_highlight)
-        self.compare_diff_threshold = max(0, min(255, int(diff_threshold)))
-        self.update()
-
-    def draw_compare_difference_overlay(self, painter: QPainter, target: QRect, left_image: QImage, right_image: QImage) -> None:
-        if left_image.isNull() or right_image.isNull():
-            return
-        painter.save()
-        painter.setPen(QPen(QColor(255, 96, 0, 180), 1))
-        for x, y in iter_difference_points(left_image, right_image, int(self.compare_diff_threshold)):
-            painter.drawPoint(target.x() + x, target.y() + y)
-        painter.restore()
-
-    def set_horizontal_wheel_options(self, enabled: bool, inverted: bool) -> None:
-        self.horizontal_wheel_navigation = bool(enabled)
-        self.horizontal_wheel_inverted = bool(inverted)
-
-    def set_resample_options(self, enabled: bool, algorithm: str) -> None:
-        algorithm = algorithm if algorithm in RESAMPLE_ALGORITHMS else "lanczos3"
-        if self.cpu_resample_cache_enabled != enabled or self.cpu_resample_algorithm != algorithm:
-            self.cpu_resample_cache_enabled = enabled
-            self.cpu_resample_algorithm = algorithm
-            self.resample_interaction_active = False
-            self.resample_debounce_timer.stop()
-            self.clear_resample_cache()
-            self.update()
-
-    def clear_resample_cache(self) -> None:
-        self.resample_cache.clear()
-
-    def begin_interactive_resample_delay(self) -> None:
-        if not self.cpu_resample_cache_enabled:
-            return
-        self.resample_interaction_active = True
-        self.resample_debounce_timer.start(self.resample_debounce_ms)
-
-    def finish_interactive_resample_delay(self) -> None:
-        self.resample_interaction_active = False
-        self.update()
-
-    def current_display_image(self) -> QImage:
-        if self.compare_enabled and not self.processed_image.isNull():
-            return self.processed_image
-        if not self.processed_image.isNull():
-            return self.processed_image
-        return self.source_image
-
-    def image_rect(self) -> QRect:
-        image = self.current_display_image()
-        if image.isNull():
-            return QRect()
-        scale = self.current_scale()
-        width = max(1, round(image.width() * scale))
-        height = max(1, round(image.height() * scale))
-        x = (self.width() - width) // 2 + self.offset.x()
-        y = (self.height() - height) // 2 + self.offset.y()
-        return QRect(x, y, width, height)
-
-    def current_scale(self) -> float:
-        image = self.current_display_image()
-        if image.isNull():
-            return 1.0
-        size_key = (image.width(), image.height())
-        if self.fit_scale_anchor is None or self.fit_image_size != size_key:
-            self.fit_scale_anchor = min(self.width() / image.width(), self.height() / image.height())
-            self.fit_image_size = size_key
-        return max(0.01, min(MAX_DISPLAY_SCALE, self.fit_scale_anchor * self.zoom))
-
-    def clamp_zoom_factor(self, zoom: float) -> float:
-        image = self.current_display_image()
-        if image.isNull():
-            return max(0.05, min(1.0, zoom))
-        if self.fit_scale_anchor is None or self.fit_scale_anchor <= 0:
-            self.fit_scale_anchor = min(self.width() / image.width(), self.height() / image.height())
-            self.fit_image_size = (image.width(), image.height())
-        max_zoom = MAX_DISPLAY_SCALE / max(self.fit_scale_anchor, 0.000001)
-        return max(0.05, min(max_zoom, zoom))
-
-    def reset_view(self, update: bool = True) -> None:
-        self.offset = QPoint(0, 0)
-        self.fit_scale_anchor = None
-        self.fit_image_size = None
-        self.clear_resample_cache()
-        image = self.current_display_image()
-        if not image.isNull() and self.width() > 0 and self.height() > 0:
-            self.fit_scale_anchor = min(self.width() / image.width(), self.height() / image.height())
-            self.fit_image_size = (image.width(), image.height())
-        self.zoom = 1.0
-        self.zoomChanged.emit(self.current_scale())
-        if update:
-            self.update()
-            QTimer.singleShot(0, self.update)
-
-    def reset_display_state(self) -> None:
-        self.display_rotation = 0
-        self.display_flip_horizontal = False
-        self.display_flip_vertical = False
-        self.rebuild_display_images()
-        self.reset_view()
-
-    def set_actual_zoom_percent(self, percent: int) -> None:
-        image = self.current_display_image()
-        if image.isNull():
-            return
-        if self.fit_scale_anchor is None or self.fit_scale_anchor <= 0:
-            self.fit_scale_anchor = min(self.width() / image.width(), self.height() / image.height())
-            self.fit_image_size = (image.width(), image.height())
-        actual_scale = max(0.01, min(MAX_DISPLAY_SCALE, percent / 100.0))
-        self.zoom = self.clamp_zoom_factor(actual_scale / self.fit_scale_anchor)
-        self.zoomChanged.emit(self.current_scale())
-        self.begin_interactive_resample_delay()
-        self.update()
-
-    def resizeGL(self, width: int, height: int) -> None:
-        if abs(self.zoom - 1.0) > 0.0001:
-            return
-        image = self.current_display_image()
-        if image.isNull() or width <= 0 or height <= 0:
-            return
-        self.fit_scale_anchor = min(width / image.width(), height / image.height())
-        self.fit_image_size = (image.width(), image.height())
-        self.zoomChanged.emit(self.current_scale())
-
-    def resizeEvent(self, event: QResizeEvent) -> None:
-        super().resizeEvent(event)
-        if ImageViewBaseWidget is QWidget:
-            self.resizeGL(self.width(), self.height())
-            self.request_repaint()
-
-    def zoom_to_actual_size(self) -> None:
-        image = self.current_display_image()
-        if image.isNull() or self.fit_scale_anchor is None or self.fit_scale_anchor <= 0:
-            return
-        self.zoom = self.clamp_zoom_factor(1.0 / self.fit_scale_anchor)
-        self.zoomChanged.emit(self.current_scale())
-        self.begin_interactive_resample_delay()
-        self.update()
-
-    def resampled_pixmap(self, image: QImage, target: QRect) -> QPixmap | None:
-        if not self.cpu_resample_cache_enabled or image.isNull() or target.width() <= 0 or target.height() <= 0:
-            return None
-        if self.resample_interaction_active:
-            return None
-        if target.width() == image.width() and target.height() == image.height():
-            return None
-        key = (int(image.cacheKey()), target.width(), target.height(), self.cpu_resample_algorithm)
-        cached = self.resample_cache.get(key)
-        if cached is not None:
-            self.resample_cache.move_to_end(key)
-            return cached
-        scaled = self.resample_qimage(image, target.width(), target.height())
-        if scaled.isNull():
-            return None
-        pixmap = QPixmap.fromImage(scaled)
-        self.resample_cache[key] = pixmap
-        while len(self.resample_cache) > 24:
-            self.resample_cache.popitem(last=False)
-        return pixmap
-
-    def resample_qimage(self, image: QImage, width: int, height: int) -> QImage:
-        if PILImage is None:
-            return image.scaled(width, height, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
-        source = image.convertToFormat(QImage.Format_RGBA8888)
-        size = source.sizeInBytes()
-        data = bytes(source.bits()[:size])
-        pil = PILImage.frombytes("RGBA", (source.width(), source.height()), data)
-        algorithm = self.cpu_resample_algorithm
-        if algorithm == "lanczos4" and cv2 is not None and np is not None:
-            array = np.array(pil)
-            resized = cv2.resize(array, (width, height), interpolation=cv2.INTER_LANCZOS4)
-            pil = PILImage.fromarray(resized, "RGBA")
-        else:
-            filters = {
-                "area": PILImage.Resampling.BOX,
-                "bicubic": PILImage.Resampling.BICUBIC,
-                "lanczos3": PILImage.Resampling.LANCZOS,
-                "lanczos4": PILImage.Resampling.LANCZOS,
-            }
-            pil = pil.resize((width, height), resample=filters.get(algorithm, PILImage.Resampling.LANCZOS))
-        output = pil.convert("RGBA")
-        output_data = output.tobytes()
-        return QImage(output_data, output.width, output.height, QImage.Format_RGBA8888).copy()
-
-    def draw_image(self, painter: QPainter, target: QRect, image: QImage, pixmap: QPixmap) -> None:
-        if image.isNull() or pixmap.isNull():
-            return
-        resampled = self.resampled_pixmap(image, target)
-        if resampled is not None:
-            painter.drawPixmap(target.topLeft(), resampled)
-        else:
-            painter.drawPixmap(target, pixmap)
-
-    def paintGL(self) -> None:
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
-        painter.setRenderHint(QPainter.Antialiasing, False)
-        painter.fillRect(self.rect(), self.background)
-        target = self.image_rect()
-        if target.isNull():
-            painter.setPen(QColor("#b8bcc4"))
-            painter.drawText(
-                self.rect().adjusted(24, 24, -24, -24),
-                Qt.AlignCenter | Qt.TextWordWrap,
-                "クリックまたはドロップで画像/フォルダ/アーカイブを開く\nClick or drop to open an image, folder, or archive",
-            )
-            painter.end()
-            return
-
-        source = self.source_image
-        processed = self.processed_image
-        if self.compare_enabled and not source.isNull():
-            split_x = round(target.width() * self.compare_split / 1000)
-            left_target = QRect(target.x(), target.y(), split_x, target.height())
-            right_target = QRect(target.x() + split_x, target.y(), target.width() - split_x, target.height())
-            processed_pixmap = self.processed_pixmap if not self.processed_pixmap.isNull() else self.source_pixmap
-            left_pixmap, right_pixmap = (
-                (processed_pixmap, self.source_pixmap)
-                if self.compare_swap_sides
-                else (self.source_pixmap, processed_pixmap)
-            )
-            left_image, right_image = (
-                (processed if not processed.isNull() else source, source)
-                if self.compare_swap_sides
-                else (source, processed if not processed.isNull() else source)
-            )
-            if left_target.width() > 0 and not left_pixmap.isNull():
-                painter.save()
-                painter.setClipRect(left_target)
-                self.draw_image(painter, target, left_image, left_pixmap)
-                painter.restore()
-            if right_target.width() > 0 and not right_pixmap.isNull():
-                painter.save()
-                painter.setClipRect(right_target)
-                self.draw_image(painter, target, right_image, right_pixmap)
-                painter.restore()
-            if self.compare_diff_highlight and not left_image.isNull() and not right_image.isNull():
-                self.draw_compare_difference_overlay(painter, target, left_image, right_image)
-            pen = QPen(self.compare_line_color)
-            pen.setWidth(max(1, self.compare_line_width))
-            painter.setPen(pen)
-            painter.drawLine(target.x() + split_x, target.y(), target.x() + split_x, target.y() + target.height())
-        else:
-            pixmap = self.processed_pixmap if not self.processed_pixmap.isNull() else self.source_pixmap
-            image = self.processed_image if not self.processed_image.isNull() else self.source_image
-            if not pixmap.isNull():
-                self.draw_image(painter, target, image, pixmap)
-        painter.end()
-
-    def paintEvent(self, event: QPaintEvent) -> None:
-        if ImageViewBaseWidget is QWidget:
-            self.paintGL()
-            return
-        super().paintEvent(event)
-
-    def matching_mouse_action(self, event: QEvent, double: bool) -> str | None:
-        modifiers = modifier_value(event.modifiers())
-        button = int(event.button().value if hasattr(event.button(), "value") else event.button())
-        signature = (button, modifiers, double)
-        if signature in self.duplicate_mouse_bindings:
-            return None
-        for action_id, bindings in self.key_bindings.items():
-            binding = bindings.get("mouse") if isinstance(bindings, dict) else None
-            if not binding:
-                continue
-            if (
-                int(binding.get("button", 0)) == button
-                and int(binding.get("modifiers", 0)) == modifiers
-                and bool(binding.get("double", False)) == double
-            ):
-                return action_id
-        return None
-
-    def wheelEvent(self, event: QEvent) -> None:
-        angle_delta = event.angleDelta()
-        if abs(angle_delta.x()) > abs(angle_delta.y()):
-            if not self.horizontal_wheel_navigation or event.modifiers() & Qt.ControlModifier:
-                event.ignore()
-                return
-            delta = angle_delta.x()
-            pages = max(1, abs(delta) // 120)
-            step = pages if delta > 0 else -pages
-            if self.horizontal_wheel_inverted:
-                step = -step
-            self.pageRequested.emit(step)
-            return
-        delta = angle_delta.y()
-        if delta == 0:
-            event.ignore()
-            return
-        if event.modifiers() & Qt.ControlModifier:
-            factor = 1.12 if delta > 0 else 1 / 1.12
-            self.zoom = self.clamp_zoom_factor(self.zoom * factor)
-            self.zoomChanged.emit(self.current_scale())
-            self.begin_interactive_resample_delay()
-            self.request_repaint()
-            return
-        pages = max(1, abs(delta) // 120)
-        self.pageRequested.emit(pages if delta < 0 else -pages)
-
-    def mousePressEvent(self, event: QEvent) -> None:
-        action_id = self.matching_mouse_action(event, double=False)
-        if action_id:
-            self.actionRequested.emit(action_id)
-            return
-        if event.button() == Qt.LeftButton and self.current_display_image().isNull():
-            self.emptyAreaClicked.emit()
-            return
-        if event.button() == Qt.LeftButton:
-            if event.modifiers() & Qt.ControlModifier:
-                self.zoom_drag_start = event.position().toPoint()
-                self.pan_start = None
-            elif self._drag_moves_compare_boundary(event):
-                self._set_split_from_x(round(event.position().x()))
-            else:
-                self.pan_start = event.position().toPoint()
-
-    def mouseMoveEvent(self, event: QEvent) -> None:
-        if event.buttons() & Qt.LeftButton:
-            if event.modifiers() & Qt.ControlModifier:
-                pos = event.position().toPoint()
-                if self.zoom_drag_start is None:
-                    self.zoom_drag_start = pos
-                dy = pos.y() - self.zoom_drag_start.y()
-                if dy:
-                    self.zoom = self.clamp_zoom_factor(self.zoom * (1.01 ** (-dy)))
-                    self.zoomChanged.emit(self.current_scale())
-                    self.begin_interactive_resample_delay()
-                    self.zoom_drag_start = pos
-                    self.pan_start = None
-                    self.request_repaint()
-            elif self._drag_moves_compare_boundary(event):
-                self._set_split_from_x(round(event.position().x()))
-                self.pan_start = None
-            elif self.pan_start is not None:
-                pos = event.position().toPoint()
-                delta = pos - self.pan_start
-                self.offset += delta
-                self.pan_start = pos
-                self.request_repaint()
-        elif self.compare_enabled and not self.processed_image.isNull() and self._is_near_compare_split(event.position().x()):
-            self.setCursor(Qt.SplitHCursor)
-        else:
-            self.unsetCursor()
-
-    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
-        if event.button() == Qt.LeftButton:
-            self.zoom_drag_start = None
-            self.pan_start = None
-        super().mouseReleaseEvent(event)
-
-    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
-        action_id = self.matching_mouse_action(event, double=True)
-        if action_id:
-            self.actionRequested.emit(action_id)
-            return
-        super().mouseDoubleClickEvent(event)
-
-    def _drag_moves_compare_boundary(self, event: QEvent) -> bool:
-        if not self.compare_enabled or self.processed_image.isNull():
-            return False
-        shift = bool(event.modifiers() & Qt.ShiftModifier)
-        allowed = shift if self.compare_shift_drag_moves_boundary else not shift
-        return allowed and self._is_near_compare_split(event.position().x())
-
-    def _is_near_compare_split(self, x: float) -> bool:
-        target = self.image_rect()
-        if target.isNull() or target.width() <= 0:
-            return False
-        split_x = target.x() + round(target.width() * self.compare_split / 1000)
-        return abs(int(round(x)) - split_x) <= max(12, self.compare_line_width * 4)
-
-    def _set_split_from_x(self, x: int) -> None:
-        target = self.image_rect()
-        if target.isNull() or target.width() <= 0:
-            return
-        percent = round((x - target.x()) / target.width() * 1000)
-        self.compare_split = max(0, min(1000, percent))
-        self.splitChanged.emit(self.compare_split)
-        self.request_repaint()
+            raise ArchiveError(f"Failed to render PDF page {page_index + 1}")
+        output_path = temp_dir / f"{pdf_path.stem}_page_{page_index + 1:04d}.png"
+        if not image.save(str(output_path), "PNG"):
+            raise ArchiveError(f"Failed to save PDF page {page_index + 1}")
+        images.append(output_path)
+        names[output_path] = f"{pdf_path.name} [page {page_index + 1}]"
+        if progress_callback is not None and not progress_callback(page_index + 1, page_count):
+            raise ArchiveError("PDF open cancelled")
+    return images, names
 
 
 class MainWindow(QMainWindow):
@@ -1910,6 +532,7 @@ class MainWindow(QMainWindow):
         self.failed_original_paths: set[Path] = set()
         self.original_cache_lock = threading.Lock()
         self.processed_cache: OrderedDict[ProcessingKey, QImage] = OrderedDict()
+        self.processed_cache_limit = 200
         self.processing_paths: set[Path] = set()
         self.queued_paths: set[Path] = set()
         self.work_queue: queue.Queue[Path | None] = queue.Queue()
@@ -1969,6 +592,10 @@ class MainWindow(QMainWindow):
         self.fullscreen_ui_hide_timer = QTimer(self)
         self.fullscreen_ui_hide_timer.setSingleShot(True)
         self.fullscreen_ui_hide_timer.timeout.connect(self.hide_fullscreen_ui_if_idle)
+
+    def _trim_processed_cache(self) -> None:
+        while len(self.processed_cache) > self.processed_cache_limit:
+            self.processed_cache.popitem(last=False)
 
     def _init_ui(self) -> None:
         self.setWindowTitle(APP_NAME)
@@ -3586,6 +2213,9 @@ class MainWindow(QMainWindow):
 
     def open_path(self, path: Path) -> None:
         path = path.resolve()
+        if path.is_file() and path.suffix.lower() == ".pdf":
+            self.open_pdf(path)
+            return
         if path.is_file() and path.suffix.lower() in ARCHIVE_EXTENSIONS:
             self.open_archive(path)
             return
@@ -3792,6 +2422,7 @@ class MainWindow(QMainWindow):
                 processed = QImage(str(existing))
                 if not processed.isNull():
                     self.processed_cache[cache_key] = processed
+                    self._trim_processed_cache()
         if processed is None or processed.isNull():
             if self.should_skip_upscale(path):
                 skipped = True
@@ -3818,6 +2449,7 @@ class MainWindow(QMainWindow):
                         pair_processed = QImage(str(existing_pair))
                         if not pair_processed.isNull():
                             self.processed_cache[self.processing_key(pair_path)] = pair_processed
+                            self._trim_processed_cache()
                 if pair_processed is None or pair_processed.isNull():
                     if not self.should_skip_upscale(pair_path):
                         self.enqueue_upscale(pair_path, front=False)
@@ -4073,7 +2705,7 @@ class MainWindow(QMainWindow):
             self,
             "画像を開く",
             start,
-            "Images/Archives (*.png *.jpg *.jpeg *.webp *.bmp *.gif *.zip *.cbz *.rar *.cbr *.7z *.cb7);;All files (*.*)",
+            "Images/Archives (*.png *.jpg *.jpeg *.webp *.bmp *.gif *.pdf *.zip *.cbz *.rar *.cbr *.7z *.cb7);;All files (*.*)",
         )
         if path:
             self.open_path(Path(path))
@@ -5305,6 +3937,7 @@ class MainWindow(QMainWindow):
         for key, image in processed.items():
             if self.is_current_processing_key(key, current_path_strings) and key not in self.processed_cache:
                 self.processed_cache[key] = image
+                self._trim_processed_cache()
                 added_processed += 1
             processed_source = self.normalized_path(Path(key[0]))
             if processed_source in engine_plan_paths:
@@ -5571,6 +4204,7 @@ class MainWindow(QMainWindow):
             )
             key = self.processing_key(path)
             self.processed_cache[key] = result["image"]
+            self._trim_processed_cache()
             self.prefetch_engine_done_paths.add(self.normalized_path(path))
             self.update_prefetch_progress_bars()
             if self.current_index >= 0 and self.normalized_path(path) == self.normalized_path(self.image_paths[self.current_index]):
@@ -5675,6 +4309,51 @@ class MainWindow(QMainWindow):
         self.leave_archive_mode()
         self.archive_temp_dir = temp_dir
         self.archive_source_path = archive_path
+        self.archive_display_names = names
+        self.set_archive_options_enabled(False)
+        self.set_image_list(images, 0)
+
+    def open_pdf(self, pdf_path: Path) -> None:
+        temp_dir = Path(tempfile.mkdtemp(prefix=TEMP_ARCHIVE_PREFIX))
+        self.write_temp_lock(temp_dir)
+        progress_dialog: QProgressDialog | None = None
+
+        def update_progress(current: int, total: int) -> bool:
+            nonlocal progress_dialog
+            if progress_dialog is None:
+                progress_dialog = QProgressDialog(self.tr_ui("PDFを展開中..."), self.tr_ui("キャンセル"), 0, total, self)
+                progress_dialog.setWindowModality(Qt.WindowModal)
+                progress_dialog.setMinimumDuration(0)
+                progress_dialog.setAutoClose(False)
+                progress_dialog.setAutoReset(False)
+                progress_dialog.setValue(current)
+                progress_dialog.show()
+            else:
+                progress_dialog.setMaximum(total)
+                progress_dialog.setValue(current)
+            QApplication.processEvents()
+            return not progress_dialog.wasCanceled()
+
+        try:
+            images, names = render_pdf_pages_to_images(pdf_path, temp_dir, progress_callback=update_progress)
+        except ArchiveError as exc:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            if progress_dialog is not None:
+                progress_dialog.close()
+            self.append_log_with_level(f"PDF open failed: {pdf_path.name} | {exc}", LOG_LEVEL_ERROR)
+            if str(exc) == "PDF open cancelled":
+                return
+            QMessageBox.critical(self, APP_NAME, self.tr_ui("PDFを開けませんでした。"))
+            return
+        if progress_dialog is not None:
+            progress_dialog.close()
+        if not images:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            QMessageBox.information(self, APP_NAME, self.tr_ui("このPDFには表示できるページがありません。"))
+            return
+        self.leave_archive_mode()
+        self.archive_temp_dir = temp_dir
+        self.archive_source_path = pdf_path
         self.archive_display_names = names
         self.set_archive_options_enabled(False)
         self.set_image_list(images, 0)

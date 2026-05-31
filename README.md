@@ -58,6 +58,7 @@ pytest
 ## リリース手順
 
 `docs/RELEASE_CHECKLIST.md` を参照してください。
+`v*` 形式のタグを push すると `.github/workflows/release-package.yml` が実行され、GitHub Release に配布 zip が添付されます。
 
 ## セットアップ失敗FAQ
 

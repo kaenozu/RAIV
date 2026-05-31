@@ -27,7 +27,7 @@ if not defined PY_EXE (
 
 if not defined PY_EXE (
     echo Python was not found.
-    echo Install Python 3.11+ or ensure python.exe is available on PATH.
+    echo Install Python 3.12+ or ensure python.exe is available on PATH.
     echo If Python is already installed, restart the terminal and run this script again.
     exit /b 1
 )

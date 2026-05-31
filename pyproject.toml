@@ -1,13 +1,13 @@
 [tool.ruff]
 line-length = 140
-target-version = "py311"
+target-version = "py312"
 
 [tool.ruff.lint]
-select = ["E", "F", "I"]
+select = ["E", "F", "I", "W", "UP"]
 ignore = ["E501"]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.12"
 ignore_missing_imports = true
 warn_unused_configs = true
 disable_error_code = ["attr-defined", "assignment", "misc"]

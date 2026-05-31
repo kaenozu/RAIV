@@ -3,8 +3,8 @@ from __future__ import annotations
 import re
 import shlex
 import shutil
+from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
-from typing import Mapping
 
 
 def cleanup_stale_temp_entries(
