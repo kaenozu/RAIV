@@ -20,6 +20,7 @@ Real-CUGAN / Real-ESRGAN による超解像処理、アーカイブ展開、サ�
 from __future__ import annotations
 
 import argparse
+import config as config_module
 import json
 import os
 import queue
@@ -72,6 +73,7 @@ from config import (
     BUNDLED_REALCUGAN_EXE,
     BUNDLED_REALESRGAN_EXE,
     CONFIG_PATH,
+    CONFIG_BACKUP_PATH,
     DEFAULT_BACKGROUND_COLOR,
     DEFAULT_REALCUGAN_TEMPLATE,
     DEFAULT_REALESRGAN_TEMPLATE,
@@ -226,11 +228,6 @@ try:
 except ImportError:
     QPdfDocument = None
 
-try:
-    from PySide6.QtPdf import QPdfDocument
-except ImportError:
-    QPdfDocument = None
-
 
 @dataclass
 class RuntimeState:
@@ -241,6 +238,10 @@ class RuntimeState:
     last_navigation_step: int = 1
     folder_list_loading: bool = False
     deferred_page_steps: int = 0
+    pdf_load_session_id: int = 0
+    pdf_expected_pages: int = 0
+    pdf_loaded_pages: int = 0
+    pdf_loading: bool = False
     navigation_history: list[int] = field(default_factory=list)
     navigation_history_cursor: int = -1
     navigation_history_blocked: bool = False
@@ -262,10 +263,51 @@ class UiRuntimeState:
     closing: bool = False
 
 
+PDF_RENDER_SCALE = 1.5
+PDF_MAX_RENDER_PIXELS = 4_000_000
+PDF_PROGRESS_EVENT_INTERVAL_SEC = 0.05
+
+
+def _pdf_target_size(page_size, render_scale: float, max_render_pixels: int) -> QSize:
+    width = max(1, int(round(page_size.width() * render_scale)))
+    height = max(1, int(round(page_size.height() * render_scale)))
+
+    if max_render_pixels > 0:
+        pixel_count = width * height
+        if pixel_count > max_render_pixels:
+            ratio = (max_render_pixels / float(pixel_count)) ** 0.5
+            width = max(1, int(width * ratio))
+            height = max(1, int(height * ratio))
+
+    return QSize(width, height)
+
+
+def _render_pdf_page_image(
+    document: object,
+    pdf_path: Path,
+    temp_dir: Path,
+    page_index: int,
+    render_scale: float,
+    max_render_pixels: int,
+) -> Path:
+    page_size = document.pagePointSize(page_index)
+    if page_size.width() <= 0 or page_size.height() <= 0:
+        raise ArchiveError(f"Invalid PDF page size at page {page_index + 1}")
+    target_size = _pdf_target_size(page_size, render_scale, max_render_pixels)
+    image = document.render(page_index, target_size)
+    if image.isNull():
+        raise ArchiveError(f"Failed to render PDF page {page_index + 1}")
+    output_path = temp_dir / f"{pdf_path.stem}_page_{page_index + 1:04d}.png"
+    if not image.save(str(output_path), "PNG"):
+        raise ArchiveError(f"Failed to save PDF page {page_index + 1}")
+    return output_path
+
+
 def render_pdf_pages_to_images(
     pdf_path: Path,
     temp_dir: Path,
-    render_scale: float = 2.0,
+    render_scale: float = PDF_RENDER_SCALE,
+    max_render_pixels: int = PDF_MAX_RENDER_PIXELS,
     progress_callback: Callable[[int, int], bool] | None = None,
 ) -> tuple[list[Path], ArchiveDisplayMap]:
     if QPdfDocument is None:
@@ -287,10 +329,7 @@ def render_pdf_pages_to_images(
         page_size = document.pagePointSize(page_index)
         if page_size.width() <= 0 or page_size.height() <= 0:
             raise ArchiveError(f"Invalid PDF page size at page {page_index + 1}")
-        target_size = QSize(
-            max(1, int(round(page_size.width() * render_scale))),
-            max(1, int(round(page_size.height() * render_scale))),
-        )
+        target_size = _pdf_target_size(page_size, render_scale, max_render_pixels)
         image = document.render(page_index, target_size)
         if image.isNull():
             raise ArchiveError(f"Failed to render PDF page {page_index + 1}")
@@ -302,6 +341,22 @@ def render_pdf_pages_to_images(
         if progress_callback is not None and not progress_callback(page_index + 1, page_count):
             raise ArchiveError("PDF open cancelled")
     return images, names
+
+
+def _sync_config_module_paths() -> None:
+    config_module.APP_DIR = APP_DIR
+    config_module.CONFIG_PATH = CONFIG_PATH
+    config_module.CONFIG_BACKUP_PATH = CONFIG_BACKUP_PATH
+
+
+def load_config() -> AppConfig:
+    _sync_config_module_paths()
+    return config_module.load_config()
+
+
+def save_config(config: AppConfig) -> None:
+    _sync_config_module_paths()
+    config_module.save_config(config)
 
 
 class MainWindow(QMainWindow):
@@ -518,6 +573,9 @@ class MainWindow(QMainWindow):
         self.signals.process_started.connect(self.on_process_started)
         self.signals.process_done.connect(self.on_process_done)
         self.signals.folder_images_ready.connect(self.on_folder_images_ready)
+        self.signals.pdf_page_ready.connect(self.on_pdf_page_ready)
+        self.signals.pdf_load_done.connect(self.on_pdf_load_done)
+        self.signals.pdf_load_failed.connect(self.on_pdf_load_failed)
         self.signals.prefetch_done.connect(self.on_prefetch_done)
         self.signals.thumbnail_done.connect(self.on_thumbnail_done)
         self.signals.profile_event.connect(self.record_profile)
@@ -2282,6 +2340,10 @@ class MainWindow(QMainWindow):
             self.open_path(path)
 
     def set_image_list(self, images: list[Path], index: int, defer_work: bool = False) -> None:
+        self.runtime_state.pdf_load_session_id += 1
+        self.runtime_state.pdf_expected_pages = len(images)
+        self.runtime_state.pdf_loaded_pages = len(images)
+        self.runtime_state.pdf_loading = False
         self.image_paths = images
         self.refresh_image_path_sets()
         self.current_index = index
@@ -2308,6 +2370,94 @@ class MainWindow(QMainWindow):
             self.display_current_image(defer_work=True)
         else:
             self.display_current_image()
+
+    def queue_thumbnail_for_index(self, index: int) -> None:
+        if not self.thumbnails_enabled() or not (0 <= index < len(self.image_paths)):
+            return
+        if index in self.thumbnail_ready_indexes or index in self.thumbnail_pending:
+            return
+        with self.thumbnail_lock:
+            self.thumbnail_sequence += 1
+            sequence = self.thumbnail_sequence
+        priority = abs(index - max(0, self.current_index))
+        self.thumbnail_pending.add(index)
+        self.thumbnail_queue.put((priority, sequence, self.thumbnail_generation, index, str(self.image_paths[index])))
+
+    def append_image_path_incremental(self, path: Path, display_name: str) -> None:
+        resolved = self.normalized_path(path)
+        if resolved in self.image_path_set:
+            return
+        self.image_paths.append(path)
+        self.image_path_set.add(resolved)
+        self.image_path_string_set.add(str(resolved))
+        self.archive_display_names[resolved] = display_name
+
+        index = len(self.image_paths) - 1
+        if self.thumbnails_enabled() and hasattr(self, "thumbnail_list"):
+            item = QListWidgetItem(str(index + 1))
+            item.setData(Qt.UserRole, index)
+            item.setToolTip(display_name)
+            self.thumbnail_list.addItem(item)
+            self.thumbnail_items.append(item)
+            self.queue_thumbnail_for_index(index)
+
+        self.update_page_position_slider()
+        if self.current_index >= 0 and self.current_index < len(self.image_paths):
+            current = self.image_paths[self.current_index]
+            self.status_label.setText(
+                f"{self.current_index + 1}/{len(self.image_paths)} {self.state_text('処理済み')}: {self.display_name(current)}"
+            )
+
+    def start_pdf_background_render(self, pdf_path: Path, temp_dir: Path, start_page: int, total_pages: int, session_id: int) -> None:
+        def worker() -> None:
+            try:
+                if QPdfDocument is None:
+                    raise ArchiveError("PDF support is unavailable.")
+                document = QPdfDocument()
+                document.load(str(pdf_path))
+                if document.error() != QPdfDocument.Error.None_:
+                    raise ArchiveError("PDF decoder error")
+                for page_index in range(start_page, total_pages):
+                    if self.runtime_state.pdf_load_session_id != session_id:
+                        return
+                    output_path = _render_pdf_page_image(
+                        document,
+                        pdf_path,
+                        temp_dir,
+                        page_index,
+                        PDF_RENDER_SCALE,
+                        PDF_MAX_RENDER_PIXELS,
+                    )
+                    display_name = f"{pdf_path.name} [page {page_index + 1}]"
+                    self.signals.pdf_page_ready.emit(session_id, output_path, display_name, page_index + 1, total_pages)
+                self.signals.pdf_load_done.emit(session_id, total_pages)
+            except Exception as exc:
+                self.signals.pdf_load_failed.emit(session_id, str(exc))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def on_pdf_page_ready(self, session_id: int, page_path: Path, display_name: str, loaded_pages: int, total_pages: int) -> None:
+        if session_id != self.runtime_state.pdf_load_session_id:
+            return
+        self.runtime_state.pdf_loaded_pages = max(self.runtime_state.pdf_loaded_pages, loaded_pages)
+        self.runtime_state.pdf_expected_pages = max(self.runtime_state.pdf_expected_pages, total_pages)
+        self.append_image_path_incremental(page_path, display_name)
+
+    def on_pdf_load_done(self, session_id: int, total_pages: int) -> None:
+        if session_id != self.runtime_state.pdf_load_session_id:
+            return
+        self.runtime_state.pdf_loading = False
+        self.runtime_state.pdf_loaded_pages = max(self.runtime_state.pdf_loaded_pages, total_pages)
+        self.runtime_state.pdf_expected_pages = max(self.runtime_state.pdf_expected_pages, total_pages)
+        if self.archive_source_path is not None:
+            self.append_log_if_visible(f"PDF expanded in background: {self.runtime_state.pdf_loaded_pages}/{self.runtime_state.pdf_expected_pages}")
+        self.request_schedule_prefetch(0)
+
+    def on_pdf_load_failed(self, session_id: int, reason: str) -> None:
+        if session_id != self.runtime_state.pdf_load_session_id:
+            return
+        self.runtime_state.pdf_loading = False
+        self.append_log_with_level(f"PDF background expansion failed: {reason}", LOG_LEVEL_WARN)
 
     def collect_folder_images_async(self, folder: Path, selected_path: Path) -> None:
         def worker() -> None:
@@ -4316,47 +4466,48 @@ class MainWindow(QMainWindow):
     def open_pdf(self, pdf_path: Path) -> None:
         temp_dir = Path(tempfile.mkdtemp(prefix=TEMP_ARCHIVE_PREFIX))
         self.write_temp_lock(temp_dir)
-        progress_dialog: QProgressDialog | None = None
-
-        def update_progress(current: int, total: int) -> bool:
-            nonlocal progress_dialog
-            if progress_dialog is None:
-                progress_dialog = QProgressDialog(self.tr_ui("PDFを展開中..."), self.tr_ui("キャンセル"), 0, total, self)
-                progress_dialog.setWindowModality(Qt.WindowModal)
-                progress_dialog.setMinimumDuration(0)
-                progress_dialog.setAutoClose(False)
-                progress_dialog.setAutoReset(False)
-                progress_dialog.setValue(current)
-                progress_dialog.show()
-            else:
-                progress_dialog.setMaximum(total)
-                progress_dialog.setValue(current)
-            QApplication.processEvents()
-            return not progress_dialog.wasCanceled()
-
         try:
-            images, names = render_pdf_pages_to_images(pdf_path, temp_dir, progress_callback=update_progress)
+            if QPdfDocument is None:
+                raise ArchiveError("PDF support is unavailable.")
+            document = QPdfDocument()
+            document.load(str(pdf_path))
+            if document.error() != QPdfDocument.Error.None_:
+                raise ArchiveError("PDF decoder error")
+            total_pages = document.pageCount()
+            if total_pages <= 0:
+                raise ArchiveError("PDF has no pages")
+
+            first_page_path = _render_pdf_page_image(
+                document,
+                pdf_path,
+                temp_dir,
+                0,
+                PDF_RENDER_SCALE,
+                PDF_MAX_RENDER_PIXELS,
+            )
         except ArchiveError as exc:
             shutil.rmtree(temp_dir, ignore_errors=True)
-            if progress_dialog is not None:
-                progress_dialog.close()
             self.append_log_with_level(f"PDF open failed: {pdf_path.name} | {exc}", LOG_LEVEL_ERROR)
-            if str(exc) == "PDF open cancelled":
-                return
             QMessageBox.critical(self, APP_NAME, self.tr_ui("PDFを開けませんでした。"))
             return
-        if progress_dialog is not None:
-            progress_dialog.close()
-        if not images:
-            shutil.rmtree(temp_dir, ignore_errors=True)
-            QMessageBox.information(self, APP_NAME, self.tr_ui("このPDFには表示できるページがありません。"))
-            return
+
+        first_page_name = f"{pdf_path.name} [page 1]"
+        images = [first_page_path]
+        names = {first_page_path.resolve(): first_page_name}
         self.leave_archive_mode()
         self.archive_temp_dir = temp_dir
         self.archive_source_path = pdf_path
         self.archive_display_names = names
         self.set_archive_options_enabled(False)
         self.set_image_list(images, 0)
+        self.runtime_state.pdf_expected_pages = total_pages
+        self.runtime_state.pdf_loaded_pages = 1
+
+        if total_pages > 1:
+            session_id = self.runtime_state.pdf_load_session_id
+            self.runtime_state.pdf_loading = True
+            self.append_log_if_visible(f"PDF background expansion started: 1/{total_pages}")
+            self.start_pdf_background_render(pdf_path, temp_dir, 1, total_pages, session_id)
 
     def extract_archive_images(self, archive_path: Path, temp_dir: Path) -> tuple[list[Path], ArchiveDisplayMap]:
         return extract_archive_images_impl(archive_path, temp_dir, self.is_image, py7zr, rarfile)

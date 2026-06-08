@@ -855,8 +855,8 @@ def load_config() -> AppConfig:
             broken = APP_DIR / f"setting.json.corrupt.{timestamp}"
             if CONFIG_PATH.exists():
                 CONFIG_PATH.replace(broken)
-        except Exception:
-            pass
+        except Exception as recover_exc:
+            logging.getLogger(__name__).debug("Failed to move corrupt config: %s", recover_exc)
         try:
             if CONFIG_BACKUP_PATH.exists():
                 CONFIG_PATH.write_text(CONFIG_BACKUP_PATH.read_text(encoding="utf-8-sig"), encoding="utf-8")
@@ -866,8 +866,8 @@ def load_config() -> AppConfig:
                 if "compare_split" in data and _is_real_int(data.get("compare_split", 500)) and 0 <= int(data["compare_split"]) <= 100:
                     config.compare_split = int(data["compare_split"]) * 10
                 return config
-        except Exception:
-            pass
+        except Exception as backup_exc:
+            logging.getLogger(__name__).debug("Failed to recover config from backup: %s", backup_exc)
         return AppConfig()
 
 

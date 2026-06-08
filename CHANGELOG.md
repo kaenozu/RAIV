@@ -6,14 +6,24 @@ The format is based on Keep a Changelog.
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-06-08
+
 ### Added
-- 
+- PDF page rendering support with progress dialog and cancel support.
+- Config regression tests for runtime field normalization and backup recovery.
 
 ### Changed
-- 
+- Refactored config persistence and startup UX with safer corrupt config recovery paths.
+- Improved side panel detach/reattach and auto-position behavior with better geometry clamping.
+- Refined release automation workflows for packaging and GitHub Releases.
+- Migrated config binding helpers to centralized config module and updated import style.
 
 ### Fixed
-- 
+- Hardened config loading against corrupt or missing fields with backup restore on failure.
+- Fixed command template error handling to return controlled ValueError for malformed placeholders.
+- Fixed side panel interaction behavior after detach/reattach in auto mode.
+- Fixed mypy issues in config and event handlers.
+- Fixed config type guard for mypy compatibility.
 
 ## [1.0.1] - 2026-05-28
 
