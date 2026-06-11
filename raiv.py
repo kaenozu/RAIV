@@ -123,12 +123,10 @@ from config import (
     enable_high_dpi_awareness,
     key_binding_text,
     keyboard_signature,
-    load_config,
     modifier_value,
     mouse_binding_text,
     mouse_signature,
     normalize_key_bindings,
-    save_config,
     set_process_app_user_model_id,
 )
 from exceptions import ArchiveError
