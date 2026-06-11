@@ -24,7 +24,7 @@ import sys
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import TypeGuard
+from typing import TypeAlias, TypeGuard
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QKeySequence
@@ -130,10 +130,11 @@ MODIFIER_MASK = (
     | Qt.ShiftModifier.value
     | Qt.AltModifier.value
 )
-type BindingValue = dict[str, int | bool]
-type BindingMap = dict[str, dict[str, BindingValue | None]]
-type ProcessingKey = tuple[str, str, int, int, int, str]
-type ArchiveDisplayMap = dict[Path, str]
+
+BindingValue: TypeAlias = dict[str, int | bool]
+BindingMap: TypeAlias = dict[str, dict[str, BindingValue | None]]
+ProcessingKey: TypeAlias = tuple[str, str, int, int, int, str]
+ArchiveDisplayMap: TypeAlias = dict[Path, str]
 
 ACTION_DEFS = [
     ("open_image", "画像を開く"),
