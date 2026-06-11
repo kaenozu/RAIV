@@ -332,7 +332,7 @@ def render_pdf_pages_to_images(
         if image.isNull():
             raise ArchiveError(f"Failed to render PDF page {page_index + 1}")
         output_path = temp_dir / f"{pdf_path.stem}_page_{page_index + 1:04d}.png"
-        if not image.save(str(output_path), "PNG"):
+        if not image.save(str(output_path), "PNG"):  # type: ignore[call-overload]
             raise ArchiveError(f"Failed to save PDF page {page_index + 1}")
         images.append(output_path)
         names[output_path] = f"{pdf_path.name} [page {page_index + 1}]"
