@@ -125,11 +125,7 @@ RESAMPLE_ALGORITHMS = {
     "bicubic": "Bicubic",
     "area": "Area",
 }
-MODIFIER_MASK = (
-    Qt.ControlModifier.value
-    | Qt.ShiftModifier.value
-    | Qt.AltModifier.value
-)
+MODIFIER_MASK = Qt.ControlModifier.value | Qt.ShiftModifier.value | Qt.AltModifier.value
 
 BindingValue: TypeAlias = dict[str, int | bool]
 BindingMap: TypeAlias = dict[str, dict[str, BindingValue | None]]
@@ -752,11 +748,7 @@ def _normalize_str_list(value: object, limit: int | None = None) -> list[str]:
 def _normalize_engine_presets(value: object) -> dict[str, dict[str, object]]:
     if not isinstance(value, dict):
         return {}
-    return {
-        name: preset
-        for name, preset in value.items()
-        if isinstance(name, str) and name.strip() and isinstance(preset, dict)
-    }
+    return {name: preset for name, preset in value.items() if isinstance(name, str) and name.strip() and isinstance(preset, dict)}
 
 
 def normalize_loaded_config_fields(config: AppConfig) -> AppConfig:
@@ -773,7 +765,9 @@ def normalize_loaded_config_fields(config: AppConfig) -> AppConfig:
     config.page_jump_value = max(1, int(getattr(config, "page_jump_value", 1)))
     if config.sort_mode not in SORT_MODES:
         config.sort_mode = "name"
-    config.thumbnail_worker_count = max(1, min(MAX_THUMBNAIL_WORKER_COUNT, int(getattr(config, "thumbnail_worker_count", DEFAULT_THUMBNAIL_WORKER_COUNT))))
+    config.thumbnail_worker_count = max(
+        1, min(MAX_THUMBNAIL_WORKER_COUNT, int(getattr(config, "thumbnail_worker_count", DEFAULT_THUMBNAIL_WORKER_COUNT)))
+    )
     if not isinstance(config.recent_dirs, list):
         config.recent_dirs = []
     config.recent_dirs = [str(item) for item in config.recent_dirs if isinstance(item, str) and item.strip()][:MAX_RECENT_DIRS]
@@ -863,7 +857,28 @@ def load_config() -> AppConfig:
                 CONFIG_PATH.write_text(CONFIG_BACKUP_PATH.read_text(encoding="utf-8-sig"), encoding="utf-8")
                 data = json.loads(CONFIG_PATH.read_text(encoding="utf-8-sig"))
                 config = AppConfig(**{**asdict(AppConfig()), **data})
+                if config.command_template == LEGACY_REALCUGAN_TEMPLATE and BUNDLED_REALCUGAN_EXE.exists():
+                    config.command_template = DEFAULT_REALCUGAN_TEMPLATE
+                if config.realcugan_command_template in {LEGACY_REALCUGAN_TEMPLATE, ""} and BUNDLED_REALCUGAN_EXE.exists():
+                    config.realcugan_command_template = DEFAULT_REALCUGAN_TEMPLATE
+                if config.realesrgan_command_template in {LEGACY_REALESRGAN_TEMPLATE, ""} and BUNDLED_REALESRGAN_EXE.exists():
+                    config.realesrgan_command_template = DEFAULT_REALESRGAN_TEMPLATE
+                if "realcugan_command_template" not in data:
+                    config.realcugan_command_template = config.command_template or DEFAULT_REALCUGAN_TEMPLATE
+                if config.side_panel_position not in SIDE_PANEL_POSITIONS:
+                    config.side_panel_position = "right"
+                if not isinstance(config.side_panel_detached, bool):
+                    config.side_panel_detached = False
+                config.side_panel_width = _clamp_int(config.side_panel_width, 460, MIN_SIDE_PANEL_WIDTH)
+                if not isinstance(config.side_panel_window_rect, list) or len(config.side_panel_window_rect) != 4:
+                    config.side_panel_window_rect = None
+                elif not all(_is_real_int(value) for value in config.side_panel_window_rect):
+                    config.side_panel_window_rect = None
                 config = normalize_loaded_config_fields(config)
+                if BUNDLED_REALCUGAN_EXE.exists() and not command_executable_exists(config.realcugan_command_template):
+                    config.realcugan_command_template = DEFAULT_REALCUGAN_TEMPLATE
+                if BUNDLED_REALESRGAN_EXE.exists() and not command_executable_exists(config.realesrgan_command_template):
+                    config.realesrgan_command_template = DEFAULT_REALESRGAN_TEMPLATE
                 if "compare_split" in data and _is_real_int(data.get("compare_split", 500)) and 0 <= int(data["compare_split"]) <= 100:
                     config.compare_split = int(data["compare_split"]) * 10
                 return config
@@ -879,9 +894,12 @@ def save_config(config: AppConfig) -> None:
             shutil.copy2(CONFIG_PATH, CONFIG_BACKUP_PATH)
     except Exception:
         pass
-    temp_path = APP_DIR / "setting.json.tmp"
-    temp_path.write_text(payload, encoding="utf-8")
-    temp_path.replace(CONFIG_PATH)
+    try:
+        temp_path = APP_DIR / "setting.json.tmp"
+        temp_path.write_text(payload, encoding="utf-8")
+        temp_path.replace(CONFIG_PATH)
+    except OSError as exc:
+        logging.getLogger(__name__).error("Failed to save config to %s: %s", CONFIG_PATH, exc)
 
 
 def modifier_value(modifiers) -> int:
