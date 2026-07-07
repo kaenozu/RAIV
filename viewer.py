@@ -1,33 +1,49 @@
 """
 viewer.py
 
-RAIV のOpenGL画像表示ウィジェットおよびシグナル定義。
+RAIV の画像表示ウィジェットおよびシグナル定義。
+OpenGL 有効時は QOpenGLWidget、無効時は QWidget にフォールバックする。
 
 なぜ存在するか:
     画像の表示、ズーム/パン/回転/反転操作、比較表示、CPUリサンプルキャッシュ、
     pixmap先読みなど、表示に関する責務を担当する。
 
 関連ファイル:
-    - config.py: 定数 (MAX_DISPLAY_SCALE, RESAMPLE_ALGORITHMS 等)
+    - config.py: 定数 (MAX_DISPLAY_SCALE, RESAMPLE_ALGORITHMS, DEFAULT_BACKGROUND_COLOR 等)
     - raiv.py: MainWindow から GLImageView を生成する
+    - renderer_utils.py: 比較差分検出 (iter_difference_points)
 """
 
 from __future__ import annotations
 
+import os
 import time
 from collections import OrderedDict, deque
 
 from PySide6.QtCore import QEvent, QObject, QPoint, QRect, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap, QTransform
-from PySide6.QtOpenGLWidgets import QOpenGLWidget
+from PySide6.QtGui import (
+    QColor,
+    QImage,
+    QMouseEvent,
+    QPainter,
+    QPaintEvent,
+    QPen,
+    QPixmap,
+    QResizeEvent,
+    QTransform,
+)
+from PySide6.QtWidgets import QWidget
 
 from config import (
+    DEFAULT_BACKGROUND_COLOR,
     MAX_DISPLAY_SCALE,
     RESAMPLE_ALGORITHMS,
+    BindingMap,
     duplicate_binding_signatures,
     modifier_value,
     normalize_key_bindings,
 )
+from renderer_utils import iter_difference_points
 
 try:
     from PIL import Image as PILImage
@@ -44,17 +60,32 @@ try:
 except ImportError:
     np = None
 
+USE_OPENGL_VIEW = os.environ.get("RAIV_USE_OPENGL", "").strip().lower() in {"1", "true", "yes", "on"}
+ImageViewBaseWidget: type = QWidget
+if USE_OPENGL_VIEW:
+    try:
+        from PySide6.QtOpenGLWidgets import QOpenGLWidget
+
+        ImageViewBaseWidget = QOpenGLWidget
+    except Exception:
+        ImageViewBaseWidget = QWidget
+else:
+    ImageViewBaseWidget = QWidget
+
 
 class AppSignals(QObject):
     process_started = Signal(str)
     process_done = Signal(object)
     folder_images_ready = Signal(object, object)
+    pdf_page_ready = Signal(int, object, str, int, int)
+    pdf_load_done = Signal(int, int)
+    pdf_load_failed = Signal(int, str)
     prefetch_done = Signal(int, object, object, object, object)
     thumbnail_done = Signal(int, int, object)
     profile_event = Signal(str, float)
 
 
-class GLImageView(QOpenGLWidget):
+class GLImageView(ImageViewBaseWidget):  # type: ignore[valid-type]
     pageRequested = Signal(int)
     firstRequested = Signal()
     lastRequested = Signal()
@@ -64,6 +95,7 @@ class GLImageView(QOpenGLWidget):
     resetRequested = Signal()
     actualSizeRequested = Signal()
     actionRequested = Signal(str)
+    emptyAreaClicked = Signal()
     pixmapPrefetchProgress = Signal(int, int, int, float)
 
     def __init__(self, parent=None) -> None:
@@ -71,7 +103,7 @@ class GLImageView(QOpenGLWidget):
         self.setAcceptDrops(True)
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.StrongFocus)
-        self.background = QColor("#000000")
+        self.background = QColor(DEFAULT_BACKGROUND_COLOR)
         self.raw_source_image = QImage()
         self.raw_processed_image = QImage()
         self.source_image = QImage()
@@ -81,7 +113,7 @@ class GLImageView(QOpenGLWidget):
         self.display_rotation = 0
         self.display_flip_horizontal = False
         self.display_flip_vertical = False
-        self.key_bindings: dict = {}
+        self.key_bindings: BindingMap = {}
         self.duplicate_mouse_bindings: set[tuple] = set()
         self.resample_cache: OrderedDict[tuple[int, int, int, str], QPixmap] = OrderedDict()
         self.pixmap_cache: OrderedDict[tuple[int, int, bool, bool], QPixmap] = OrderedDict()
@@ -97,6 +129,9 @@ class GLImageView(QOpenGLWidget):
         self.resample_debounce_timer = QTimer(self)
         self.resample_debounce_timer.setSingleShot(True)
         self.resample_debounce_timer.timeout.connect(self.finish_interactive_resample_delay)
+        self.repaint_coalesce_timer = QTimer(self)
+        self.repaint_coalesce_timer.setSingleShot(True)
+        self.repaint_coalesce_timer.timeout.connect(self.update)
         self.resample_interaction_active = False
         self.resample_debounce_ms = 180
         self.compare_enabled = False
@@ -105,6 +140,8 @@ class GLImageView(QOpenGLWidget):
         self.compare_line_width = 2
         self.compare_swap_sides = False
         self.compare_shift_drag_moves_boundary = False
+        self.compare_diff_highlight = False
+        self.compare_diff_threshold = 24
         self.horizontal_wheel_navigation = False
         self.horizontal_wheel_inverted = False
         self.zoom = 1.0
@@ -147,7 +184,7 @@ class GLImageView(QOpenGLWidget):
         self.clear_resample_cache()
         self.update()
 
-    def set_key_bindings(self, bindings: dict[str, dict[str, dict | None]]) -> None:
+    def set_key_bindings(self, bindings: BindingMap) -> None:
         self.key_bindings = normalize_key_bindings(bindings)
         self.duplicate_mouse_bindings = duplicate_binding_signatures(self.key_bindings, "mouse")
 
@@ -236,6 +273,7 @@ class GLImageView(QOpenGLWidget):
     def rotate_display(self, degrees: int) -> None:
         self.display_rotation = (self.display_rotation + degrees) % 360
         self.rebuild_display_images()
+        self.optimize_pixmap_cache_for_transform()
         self.clear_resample_cache()
         self.reset_view(update=False)
         self.update()
@@ -246,21 +284,65 @@ class GLImageView(QOpenGLWidget):
         else:
             self.display_flip_vertical = not self.display_flip_vertical
         self.rebuild_display_images()
+        self.optimize_pixmap_cache_for_transform()
         self.clear_resample_cache()
         self.update()
+
+    def optimize_pixmap_cache_for_transform(self) -> None:
+        rotation = self.display_rotation % 360
+        flip_h = self.display_flip_horizontal
+        flip_v = self.display_flip_vertical
+        filtered = OrderedDict(
+            (key, value)
+            for key, value in self.pixmap_cache.items()
+            if key[1] == rotation and key[2] == flip_h and key[3] == flip_v
+        )
+        if filtered:
+            self.pixmap_cache = filtered
+        if not self.raw_source_image.isNull():
+            self.source_pixmap = self.pixmap_for_image(self.raw_source_image, self.source_image)
+        if not self.raw_processed_image.isNull():
+            self.processed_pixmap = self.pixmap_for_image(self.raw_processed_image, self.processed_image)
+
+    def request_repaint(self, delay_ms: int = 0) -> None:
+        delay = max(0, int(delay_ms))
+        if self.repaint_coalesce_timer.isActive():
+            return
+        self.repaint_coalesce_timer.start(delay)
 
     def set_background(self, color: str) -> None:
         self.background = QColor(color)
         self.update()
 
-    def set_compare(self, enabled: bool, split: int, line_color: str, line_width: int, swap_sides: bool, shift_boundary: bool) -> None:
+    def set_compare(
+        self,
+        enabled: bool,
+        split: int,
+        line_color: str,
+        line_width: int,
+        swap_sides: bool,
+        shift_boundary: bool,
+        diff_highlight: bool = False,
+        diff_threshold: int = 24,
+    ) -> None:
         self.compare_enabled = enabled
         self.compare_split = int(split)
         self.compare_line_color = QColor(line_color)
         self.compare_line_width = int(line_width)
         self.compare_swap_sides = bool(swap_sides)
         self.compare_shift_drag_moves_boundary = bool(shift_boundary)
+        self.compare_diff_highlight = bool(diff_highlight)
+        self.compare_diff_threshold = max(0, min(255, int(diff_threshold)))
         self.update()
+
+    def draw_compare_difference_overlay(self, painter: QPainter, target: QRect, left_image: QImage, right_image: QImage) -> None:
+        if left_image.isNull() or right_image.isNull():
+            return
+        painter.save()
+        painter.setPen(QPen(QColor(255, 96, 0, 180), 1))
+        for x, y in iter_difference_points(left_image, right_image, int(self.compare_diff_threshold)):
+            painter.drawPoint(target.x() + x, target.y() + y)
+        painter.restore()
 
     def set_horizontal_wheel_options(self, enabled: bool, inverted: bool) -> None:
         self.horizontal_wheel_navigation = bool(enabled)
@@ -372,6 +454,12 @@ class GLImageView(QOpenGLWidget):
         self.fit_image_size = (image.width(), image.height())
         self.zoomChanged.emit(self.current_scale())
 
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        super().resizeEvent(event)
+        if not USE_OPENGL_VIEW:
+            self.resizeGL(self.width(), self.height())
+            self.request_repaint()
+
     def zoom_to_actual_size(self) -> None:
         image = self.current_display_image()
         if image.isNull() or self.fit_scale_anchor is None or self.fit_scale_anchor <= 0:
@@ -442,6 +530,12 @@ class GLImageView(QOpenGLWidget):
         painter.fillRect(self.rect(), self.background)
         target = self.image_rect()
         if target.isNull():
+            painter.setPen(QColor("#b8bcc4"))
+            painter.drawText(
+                self.rect().adjusted(24, 24, -24, -24),
+                Qt.AlignCenter | Qt.TextWordWrap,
+                "クリックまたはドロップで画像/フォルダ/アーカイブを開く\nClick or drop to open an image, folder, or archive",
+            )
             painter.end()
             return
 
@@ -472,6 +566,8 @@ class GLImageView(QOpenGLWidget):
                 painter.setClipRect(right_target)
                 self.draw_image(painter, target, right_image, right_pixmap)
                 painter.restore()
+            if self.compare_diff_highlight and not left_image.isNull() and not right_image.isNull():
+                self.draw_compare_difference_overlay(painter, target, left_image, right_image)
             pen = QPen(self.compare_line_color)
             pen.setWidth(max(1, self.compare_line_width))
             painter.setPen(pen)
@@ -482,6 +578,12 @@ class GLImageView(QOpenGLWidget):
             if not pixmap.isNull():
                 self.draw_image(painter, target, image, pixmap)
         painter.end()
+
+    def paintEvent(self, event: QPaintEvent) -> None:
+        if not USE_OPENGL_VIEW:
+            self.paintGL()
+            return
+        super().paintEvent(event)
 
     def matching_mouse_action(self, event: QEvent, double: bool) -> str | None:
         modifiers = modifier_value(event.modifiers())
@@ -523,7 +625,7 @@ class GLImageView(QOpenGLWidget):
             self.zoom = self.clamp_zoom_factor(self.zoom * factor)
             self.zoomChanged.emit(self.current_scale())
             self.begin_interactive_resample_delay()
-            self.update()
+            self.request_repaint()
             return
         pages = max(1, abs(delta) // 120)
         self.pageRequested.emit(pages if delta < 0 else -pages)
@@ -532,6 +634,9 @@ class GLImageView(QOpenGLWidget):
         action_id = self.matching_mouse_action(event, double=False)
         if action_id:
             self.actionRequested.emit(action_id)
+            return
+        if event.button() == Qt.LeftButton and self.current_display_image().isNull():
+            self.emptyAreaClicked.emit()
             return
         if event.button() == Qt.LeftButton:
             if event.modifiers() & Qt.ControlModifier:
@@ -555,7 +660,7 @@ class GLImageView(QOpenGLWidget):
                     self.begin_interactive_resample_delay()
                     self.zoom_drag_start = pos
                     self.pan_start = None
-                    self.update()
+                    self.request_repaint()
             elif self._drag_moves_compare_boundary(event):
                 self._set_split_from_x(round(event.position().x()))
                 self.pan_start = None
@@ -564,15 +669,19 @@ class GLImageView(QOpenGLWidget):
                 delta = pos - self.pan_start
                 self.offset += delta
                 self.pan_start = pos
-                self.update()
+                self.request_repaint()
+        elif self.compare_enabled and not self.processed_image.isNull() and self._is_near_compare_split(event.position().x()):
+            self.setCursor(Qt.SplitHCursor)
+        else:
+            self.unsetCursor()
 
-    def mouseReleaseEvent(self, event: QEvent) -> None:
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.LeftButton:
             self.zoom_drag_start = None
             self.pan_start = None
         super().mouseReleaseEvent(event)
 
-    def mouseDoubleClickEvent(self, event: QEvent) -> None:
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
         action_id = self.matching_mouse_action(event, double=True)
         if action_id:
             self.actionRequested.emit(action_id)
@@ -583,7 +692,15 @@ class GLImageView(QOpenGLWidget):
         if not self.compare_enabled or self.processed_image.isNull():
             return False
         shift = bool(event.modifiers() & Qt.ShiftModifier)
-        return shift if self.compare_shift_drag_moves_boundary else not shift
+        allowed = shift if self.compare_shift_drag_moves_boundary else not shift
+        return allowed and self._is_near_compare_split(event.position().x())
+
+    def _is_near_compare_split(self, x: float) -> bool:
+        target = self.image_rect()
+        if target.isNull() or target.width() <= 0:
+            return False
+        split_x = target.x() + round(target.width() * self.compare_split / 1000)
+        return abs(int(round(x)) - split_x) <= max(12, self.compare_line_width * 4)
 
     def _set_split_from_x(self, x: int) -> None:
         target = self.image_rect()
@@ -592,4 +709,4 @@ class GLImageView(QOpenGLWidget):
         percent = round((x - target.x()) / target.width() * 1000)
         self.compare_split = max(0, min(1000, percent))
         self.splitChanged.emit(self.compare_split)
-        self.update()
+        self.request_repaint()

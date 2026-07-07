@@ -13,7 +13,8 @@ RAIV のキーバインディング設定ダイアログ。
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, Qt
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QKeyEvent, QMouseEvent
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -25,11 +26,20 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from config import UI_TEXT_EN, UI_TEXT_JA, key_binding, key_binding_text, mouse_binding, mouse_binding_text
+from config import (
+    DIALOG_ACCEPT_TEXT,
+    MODIFIER_LABELS,
+    BindingValue,
+    key_binding,
+    key_binding_text,
+    mouse_binding,
+    mouse_binding_text,
+)
+from ui_text import translate_binding_text, translate_ui_text
 
 
 class KeyBindingDialog(QDialog):
-    def __init__(self, parent: QWidget, title: str, kind: str, binding: dict | None) -> None:
+    def __init__(self, parent: QWidget, title: str, kind: str, binding: BindingValue | None) -> None:
         super().__init__(parent)
         self.kind = kind
         self.binding = dict(binding) if binding else None
@@ -41,9 +51,9 @@ class KeyBindingDialog(QDialog):
         self.capture_button.clicked.connect(self.start_capture)
         layout.addWidget(self.capture_button)
         mods = QHBoxLayout()
-        self.ctrl_check = QCheckBox("Ctrl")
-        self.shift_check = QCheckBox("Shift")
-        self.alt_check = QCheckBox("Alt")
+        self.ctrl_check = QCheckBox(MODIFIER_LABELS[Qt.ControlModifier.value])
+        self.shift_check = QCheckBox(MODIFIER_LABELS[Qt.ShiftModifier.value])
+        self.alt_check = QCheckBox(MODIFIER_LABELS[Qt.AltModifier.value])
         for checkbox in (self.ctrl_check, self.shift_check, self.alt_check):
             checkbox.stateChanged.connect(self.on_option_changed)
             mods.addWidget(checkbox)
@@ -56,7 +66,7 @@ class KeyBindingDialog(QDialog):
         self.preview_label = QLabel()
         layout.addWidget(self.preview_label)
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.button(QDialogButtonBox.Ok).setText("OK")
+        buttons.button(QDialogButtonBox.Ok).setText(DIALOG_ACCEPT_TEXT)
         buttons.button(QDialogButtonBox.Cancel).setText(self.dialog_text("キャンセル"))
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
@@ -64,9 +74,9 @@ class KeyBindingDialog(QDialog):
         self.load_binding(binding)
 
     def dialog_text(self, text: str) -> str:
-        return UI_TEXT_EN.get(text, text) if self.language == "en" else UI_TEXT_JA.get(text, text)
+        return translate_ui_text(text, self.language)
 
-    def load_binding(self, binding: dict | None) -> None:
+    def load_binding(self, binding: BindingValue | None) -> None:
         modifiers = int(binding.get("modifiers", 0)) if binding else 0
         self.ctrl_check.setChecked(bool(modifiers & Qt.ControlModifier.value))
         self.shift_check.setChecked(bool(modifiers & Qt.ShiftModifier.value))
@@ -123,7 +133,7 @@ class KeyBindingDialog(QDialog):
             self.double_check.setEnabled(True)
         self.capture_button.setText(self.dialog_text("ここをクリック後、設定するキーを押下" if self.kind == "keyboard" else "ここをクリック後、設定するマウスボタンを押下"))
 
-    def keyPressEvent(self, event: QEvent) -> None:
+    def keyPressEvent(self, event: QKeyEvent) -> None:
         if not self.capturing:
             super().keyPressEvent(event)
             return
@@ -135,7 +145,7 @@ class KeyBindingDialog(QDialog):
         self.stop_capture()
         self.update_preview()
 
-    def mousePressEvent(self, event: QEvent) -> None:
+    def mousePressEvent(self, event: QMouseEvent) -> None:
         if not self.capturing or self.kind != "mouse":
             super().mousePressEvent(event)
             return
@@ -145,9 +155,7 @@ class KeyBindingDialog(QDialog):
 
     def update_preview(self) -> None:
         text = key_binding_text(self.binding) if self.kind == "keyboard" else mouse_binding_text(self.binding)
-        if self.language == "en":
-            for source, target in UI_TEXT_EN.items():
-                text = text.replace(source, target)
+        text = translate_binding_text(text, self.language)
         self.preview_label.setText(f"{self.dialog_text('現在')}: {text}")
 
     def reject(self) -> None:

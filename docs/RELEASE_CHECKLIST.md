@@ -1,20 +1,20 @@
 # Release Checklist
 
 ## Pre-release
-- [ ] Ensure `pytest` passes locally
-- [ ] Confirm app launches via `RAIV.exe`
-- [ ] Verify image/folder/archive open flows
+- [x] Ensure `pytest` passes locally
+- [x] Confirm app launches via `RAIV.exe`
+- [x] Verify image/folder/archive open flows
 - [ ] Verify engine switching (Real-CUGAN / Real-ESRGAN)
 - [ ] Verify compare mode and key bindings
-- [ ] Confirm bundled tool licenses are included
+- [x] Confirm bundled tool licenses are included
 
 ## Packaging
-- [ ] Include `tools/realcugan-ncnn-vulkan` binaries/models/readme/license
-- [ ] Include `tools/realesrgan-ncnn-vulkan` binaries/models/readme/license
-- [ ] Include `assets` icons
-- [ ] Include `README.md` and `LICENSE`
+- [x] Include `tools/realcugan-ncnn-vulkan` binaries/models/readme/license
+- [x] Include `tools/realesrgan-ncnn-vulkan` binaries/models/readme/license
+- [x] Include `assets` icons
+- [x] Include `README.md` and `LICENSE`
 
 ## Post-release
-- [ ] Tag release in Git
-- [ ] Update `CHANGELOG.md`
-- [ ] Publish release notes
+- [x] Tag release in Git
+- [x] Update `CHANGELOG.md`
+- [x] Publish release notes

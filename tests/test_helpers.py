@@ -6,6 +6,7 @@ from pathlib import Path
 from helpers import (
     archive_display_name,
     cleanup_stale_temp_entries,
+    format_command_template,
     safe_archive_member_parts,
     sort_images,
     sort_images_by_name_casefold,
@@ -95,3 +96,33 @@ def test_split_command_line_raises_for_broken_quote() -> None:
     except ValueError:
         return
     raise AssertionError("Expected ValueError for malformed command line")
+
+
+def test_format_command_template_success() -> None:
+    template = 'tool.exe -i "{input}" -o "{output}" -s {scale}'
+    rendered = format_command_template(template, {"input": "a.png", "output": "out.png", "scale": 2})
+    assert 'tool.exe -i "a.png" -o "out.png" -s 2' == rendered
+
+
+def test_format_command_template_rejects_unknown_placeholder() -> None:
+    try:
+        format_command_template('tool.exe -i "{input}" -o "{output}" -x {missing}', {"input": "a.png", "output": "out.png"})
+    except ValueError:
+        return
+    raise AssertionError("Expected ValueError for missing placeholder")
+
+
+def test_format_command_template_rejects_attribute_access() -> None:
+    try:
+        format_command_template("tool.exe -i {input.foo}", {"input": "a.png"})
+    except ValueError:
+        return
+    raise AssertionError("Expected ValueError for attribute access in placeholder")
+
+
+def test_format_command_template_rejects_invalid_braces() -> None:
+    try:
+        format_command_template('tool.exe -i "{input"', {"input": "a.png"})
+    except ValueError:
+        return
+    raise AssertionError("Expected ValueError for malformed format string")

@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import shlex
 import shutil
+from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 
 
@@ -36,6 +37,13 @@ def split_command_line(command: str) -> list[str]:
         else:
             normalized.append(part)
     return normalized
+
+
+def format_command_template(command_template: str, values: Mapping[str, object]) -> str:
+    try:
+        return command_template.format(**values)
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError) as exc:
+        raise ValueError(str(exc)) from exc
 
 
 def sort_images(paths: list[Path], mode: str = "name") -> list[Path]:
